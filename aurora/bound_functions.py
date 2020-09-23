@@ -1,8 +1,15 @@
 from inspect import signature
 
-from .utils import get_logger
+from .utils import get_terminal_writer
 
 
+AVAILABLE_PARAMS = {
+    'train_step': ['batch', 'model', 'is_validate'],
+    'val_step': ['batch', 'model', 'is_validate'],
+    'train_epoch': ['data_loader', 'model', 'is_validate', 'optimizers'],
+    'val_epoch': ['data_loader', 'model', 'is_validate', 'optimizers'],
+    'configure_optimizers': ['model']
+}
 _in_bound_function = False
 
 
@@ -24,42 +31,23 @@ class BoundFunctions:
 
     def __getitem__(self, item):
         """
-        Returns a callable which, when called, automatically injects the given context into the function.
+        Returns a callable which, when called, automatically injects the given kwargs into the function.
         """
-        def wrapper(context):
+        def wrapper(**kwargs):
             global _in_bound_function
 
-            params = self.signatures[item].parameters
-
-            # # check for invalid built-ins
-            # invalid = []
-            # for param in params:
-            #     if param.startswith('_') and param not in built_ins:
-            #         invalid.append(param)
-            # if invalid:
-            #     err_str = f'Invalid built-in context keys found: {list(invalid)}. ' \
-            #               f'Valid built-in keys are: {list(built_ins)}.'
-            #     get_logger().error(err_str)
-            #     raise ValueError(err_str)
+            used_params = self.signatures[item].parameters
+            available_params = AVAILABLE_PARAMS[item]  # TODO catch item not in ALLOWED_PARAMS
 
             # check for unavailable/undeclared context keys
-            missing = set(params).difference(context.keys())
-
-            unavailable_builtins = {m for m in missing if m.startswith('_')}
-            if unavailable_builtins:
-                err_str = f'Built-in context keys {list(unavailable_builtins)} are not available for function ' \
-                          f'\'{item}\'. Available keys: {[k for k in context.keys() if k.startswith("_")]}'
-                get_logger().error(err_str)
+            missing = set(used_params).difference(available_params)
+            if missing:
+                err_str = f'Parameters {list(missing)} are not available for function ' \
+                          f'\'{item}\'. Available parameters: {AVAILABLE_PARAMS[item]}'
+                get_terminal_writer().error(err_str)
                 raise ValueError(err_str)
 
-            undeclared_configs = missing.difference(unavailable_builtins)
-            if undeclared_configs:
-                err_str = f'Missing following keys in context for \'{item}\': {list(undeclared_configs)}. Have you ' \
-                          f'declared them in your configuration or your init function?'
-                get_logger().error(err_str)
-                raise ValueError(err_str)
-
-            kwargs = {k: v for k, v in context.items() if k in params}
+            kwargs = {k: v for k, v in kwargs.items() if k in used_params}
 
             _in_bound_function = True
             return_val = self.functions[item](**kwargs)

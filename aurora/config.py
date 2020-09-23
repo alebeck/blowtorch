@@ -7,26 +7,12 @@ import yaml
 
 from .utils import deep_merge, set_by_path
 
-# These default values are automatically set if not specified explicitly.
-_defaults = {
-    'use_cuda': True,
-    'num_workers': 2,
-    'resume': False,
-    'log_path': 'aurora-logs',
-    'primary_metric': None,
-    'smaller_is_better': True,
-    'save_every': False,
-    'collate_fn': None
-}
 
+# These default values are automatically set if not specified explicitly.
+_defaults = {}
 
 # These keys are required and have to be set within the configuration.
-_required = [
-    'model',
-    'data',
-    'batch_size',
-    'epochs'
-]
+_required = []
 
 
 class TrainingConfig:
@@ -109,10 +95,6 @@ class TrainingConfig:
         missing = set(_required).difference(self._config.keys())
         if missing:
             raise ValueError(f'Training configuration is incomplete. Missing {missing}')
-
-        for key in self._config.keys():
-            if key.startswith('_'):
-                raise ValueError(f'Config options cannot start with an underscore. Found {key}.')
 
     def __getitem__(self, item):
         return self._config[item]

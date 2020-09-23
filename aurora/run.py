@@ -1,81 +1,106 @@
+from typing import Optional, List
 from pathlib import Path
 from datetime import datetime
+import functools
 
 import yaml
 import numpy as np
 import torch
-from torch.utils.data import SubsetRandomSampler, DataLoader
+from torch import cuda
+from torch.utils.data import Dataset, DataLoader
 
-from .utils import make_wrapper, get_by_path, get_logger
+from .utils import make_wrapper, get_terminal_writer
 from .config import TrainingConfig
-from .context import TrainingContext
 from .bound_functions import BoundFunctions
+from .apply_func import move_data_to_device  # todo hook
+from .loggers import BaseLogger
 
 
 class Run:
 
-    def __init__(self):
+    def __init__(self, config_files: Optional[List]):
         self._bound_functions = BoundFunctions()
         self._config = None
-        self._context = None
-        self._primary_metric = None
+        self._model = None
+        self._train_set = None
+        self._val_set = None
+        self._batch_size = None
+        self._num_workers = None
+        self._max_epochs = None
+        self._use_gpu = None
+        self._gpu_id = None
+        self._resume = None
+        self._optimize_metric = None
+        self._checkpoint_metric = None
+        self._smaller_is_better = None  # TODO state which to minimize/checkpoint on in result dict
+        self._collate_fn = None
+        self._optimizers = None
+        self._is_validate = None
         self._config_files = []
+        self.writer = None
 
-    def _dump_state(self):
-        # TODO dump code, hw specs, ...
-        config_path = Path(self._context['_log_path']) / 'config.yaml'
-        with config_path.open('w') as fh:
-            yaml.dump(self._config.get_raw_config(), fh)
+        # TODO support run() args in config
+        if config_files is None:
+            config_files = []
+        for file in config_files:
+            self.add_config(file)
+        self._config = TrainingConfig(self._config_files)
 
     def _init_data(self):
-        if isinstance(self._config['batch_size'], tuple):
-            batch_size_train, batch_size_val = self._config['batch_size']
+        if isinstance(self._batch_size, tuple):
+            batch_size_train, batch_size_val = self._batch_size
         else:
-            batch_size_train, batch_size_val = (self._config['batch_size'],) * 2
+            batch_size_train, batch_size_val = self._batch_size, self._batch_size
 
-        if 'train' not in self._config['data'] and 'val' not in self._config['data']:
-            if not isinstance(self._config['val_size'], float):
-                raise ValueError('"val_size" has to be specified when using automated train/val split.')
-
-            ds = self._config['data']
-            idx = np.arange(len(ds))
-            np.random.shuffle(idx)
-            split = int(self._config['val_size'] * len(ds))
-            train_idx, val_idx = idx[split:], idx[:split]
-            train_loader = DataLoader(ds, batch_size_train, sampler=SubsetRandomSampler(train_idx),
-                                      num_workers=self._config['num_workers'], collate_fn=self._config['collate_fn'])
-            val_loader = DataLoader(ds, batch_size_val, sampler=SubsetRandomSampler(val_idx),
-                                    num_workers=self._config['num_workers'], collate_fn=self._config['collate_fn'])
-
-        elif 'train' in self._config['data'] and 'val' in self._config['data']:
-            ds_train = self._config['data']['train']
-            ds_val = self._config['data']['val']
-            train_loader = DataLoader(ds_train, batch_size_train, num_workers=self._config['num_workers'], shuffle=True,
-                                      collate_fn=self._config['collate_fn'])
-            val_loader = DataLoader(ds_val, batch_size_val, num_workers=self._config['num_workers'], shuffle=True,
-                                    collate_fn=self._config['collate_fn'])
-
-        else:
-            raise ValueError('Received invalid dataset configuration.')
-
+        train_loader = DataLoader(self._train_set, batch_size_train, num_workers=self._num_workers,
+                                  shuffle=True, collate_fn=self._collate_fn)
+        val_loader = DataLoader(self._val_set, batch_size_val, num_workers=self._num_workers, shuffle=False,
+                                collate_fn=self._collate_fn)
         return train_loader, val_loader
 
-    def run(self):
-        self._config = TrainingConfig(self._config_files)
-        self._context = TrainingContext(self._config)
+    # TODO types, docstrings
+    # TODO pin_memory
+    # todo clear cache before start
+    # todo hooks
+    # todo cleanup code (extra files for optim, devices etc.)
+    # todo save on ctrl-C
+    # todo look at pl GPUbackend (amp optimizuation etc)
+    def run(self,
+            model: torch.nn.Module,
+            train_set: Dataset,
+            val_set: Dataset,
+            logger: BaseLogger,
+            batch_size=1,
+            num_workers=0,
+            max_epochs=1,
+            use_gpu=True,
+            gpu_id=0,
+            resume=False,
+            optimize_metric=None,
+            checkpoint_metric=None,
+            smaller_is_better=True,
+            collate_fn=None
+            ):
+        self._model = model
+        self._train_set = train_set
+        self._val_set = val_set
+        self._logger = logger
+        self._batch_size = batch_size
+        self._num_workers = num_workers
+        self._max_epochs = max_epochs
+        self._use_gpu = use_gpu
+        self._gpu_id = gpu_id
+        self._resume = resume
+        self._optimize_metric = optimize_metric
+        self._checkpoint_metric = checkpoint_metric
+        self._smaller_is_better = smaller_is_better
+        self._collate_fn = collate_fn
 
-        counter = 1
-        log_path = Path(self._config['log_path']) / datetime.now().strftime("%y-%m-%d_%H-%M-%S")
-        while log_path.exists():
-            log_path = log_path / f'-{counter}'
-            counter += 1
+        self.writer = get_terminal_writer()
 
-        log_path.mkdir(parents=True, exist_ok=True)
-        self._context['_log_path'] = log_path
+        self._logger.log_config(self._config.get_raw_config())
 
-        logger = get_logger(log_path)
-
-        self._dump_state()
+        log_path = Path('training_logs') / datetime.now().strftime("%y-%m-%d_%H-%M-%S")
 
         if 'train_step' in self._bound_functions and 'val_step' in self._bound_functions:
             mode = 'step'
@@ -83,57 +108,65 @@ class Run:
             mode = 'epoch'
         else:
             err_str = 'Need to register either both train_step/val_step or both train_epoch/val_epoch functions.'
-            logger.error(err_str)
+            self.writer.error(err_str)
             raise ValueError(err_str)
 
         start_epoch = 0
 
         # load checkpoint
-        if self._config['resume']:
-            with logger.task('Loading checkpoint'):
-                checkpoint = torch.load(self._config['resume'])
-                self._context['_model'].load_state_dict(checkpoint['model'])
+        if self._resume:
+            with self.writer.task('Loading checkpoint'):
+                checkpoint = torch.load(self._resume)
+                self._model.load_state_dict(checkpoint['model'])
                 start_epoch = checkpoint['epoch']
 
-        with logger.task('Instantiating dataset'):
-            train_loader, val_loader = self._init_data()
+        train_loader, val_loader = self._init_data()
 
-        # check CUDA availability
-        self._context['_use_cuda'] = self._config['use_cuda'] and torch.cuda.is_available()
-        if self._context['_use_cuda']:
-            self._context['_model'].cuda()
-            logger.info('Using CUDA')
+        # GPU config
+        if not torch.cuda.device_count() > self._gpu_id:
+            err_str = f'GPU [{self._gpu_id}] is not available.'
+            self.writer.error(err_str)
+            raise ValueError(err_str)
 
-        if 'init' in self._bound_functions:
-            self._bound_functions['init'](self._context)
+        self._use_gpu = self._use_gpu and cuda.is_available()
+        if self._use_gpu:
+            self._model.cuda(device=self._gpu_id)
+            self.writer.info(f'Using GPU [{self._gpu_id}]')
 
-        if self._config['resume']:
-            logger.info(f'Resuming training from checkpoint {self._config["resume"]}')
+        self._logger.introduce_model(self._model)
+
+        self._optimizers = self._bound_functions['configure_optimizers'](model=self._model)
+        if not isinstance(self._optimizers, dict):
+            self._optimizers = {'main': self._optimizers}
+
+        if self._resume:
+            self.writer.info(f'Resuming training from checkpoint {self._resume}')
             # resume optimizer state
-            self._set_optim_states(checkpoint['optim'])
-        else:
-            logger.info('Starting training')
+            self._set_optim_states(checkpoint['optimizers'])
 
-        self._primary_metric = self._config['primary_metric']
-        best_val = float('inf') if self._config['smaller_is_better'] else 0.
+        best_val = float('inf') if self._smaller_is_better else 0.
+        best_epoch = None
 
-        for epoch in range(start_epoch, start_epoch + self._config['epochs']):
+        for epoch in range(start_epoch, start_epoch + self._max_epochs):
             metrics = {}  # stores metrics of current epoch
 
             # train
-            self._context['_model'].train()
-            self._context['_is_validate'] = False
+            self._model.train()
 
-            with logger.task(f'Training epoch {epoch}') as t:
-                if mode == 'auto':
-                    raise NotImplementedError()
-
-                elif mode == 'step':
+            with self.writer.task(f'Training epoch {epoch}') as t:
+                if mode == 'step':
                     step_metrics = []
                     for batch in t.tqdm(train_loader):
-                        self._context['_batch'] = batch
-                        train_metrics = self._bound_functions['train_step'](self._context)
+                        if self._use_gpu:
+                            batch = move_data_to_device(batch, torch.device(self._gpu_id))
+
+                        train_metrics = self._bound_functions['train_step'](batch=batch, model=self._model,
+                                                                            is_validate=False)
                         assert isinstance(train_metrics, dict), '"train_step" should return a metrics dict.'
+
+                        if epoch > 0:
+                            self._optim_step(train_metrics)
+
                         step_metrics.append({k: float(v) for k, v in train_metrics.items()})
 
                     # calculate mean metrics
@@ -142,81 +175,96 @@ class Run:
                     }
 
                 elif mode == 'epoch':
-                    self._context['_data_loader'] = train_loader
-                    train_metrics = self._bound_functions['train_epoch'](self._context)
+                    train_metrics = self._bound_functions['train_epoch'](data_loader=train_loader, model=self._model,
+                                                                         is_validate=False, optimizers=self._optimizers)
                     assert isinstance(train_metrics, dict), '"train_epoch" should return a metrics dict.'
                     metrics['train'] = {k: float(v) for k, v in train_metrics.items()}
 
-                # logging
-                log_str = f'[Epoch {epoch} / Train] ' + \
-                          ' '.join([f'{k}: {v}' for k, v in metrics['train'].items()])
-                t.info(log_str)
+                self._logger.log_epoch(metrics['train'], epoch, is_validate=False)
+
+                status_str = f'[Epoch {epoch} / Train] ' \
+                             + ' '.join([f'{k}: {self._round(v)}' for k, v in metrics['train'].items()])
+                t.success(status_str)
 
             # val
-            self._context['_model'].eval()
-            self._context['_is_validate'] = True
+            self._model.eval()
 
-            with logger.task(f'Validating epoch {epoch}') as t:
-                if mode == 'auto':
-                    raise NotImplementedError()
-
-                elif mode == 'step':
+            with self.writer.task(f'Validating epoch {epoch}') as t:
+                if mode == 'step':
                     step_metrics = []
                     for batch in t.tqdm(val_loader):
-                        self._context['_batch'] = batch
-                        val_metrics = self._bound_functions['val_step'](self._context)
+                        if self._use_gpu:
+                            batch = move_data_to_device(batch, torch.device(self._gpu_id))
+
+                        val_metrics = self._bound_functions['val_step'](batch=batch, model=self._model,
+                                                                        is_validate=True)
                         assert isinstance(val_metrics, dict), '"val_step" should return a metrics dict.'
                         step_metrics.append({k: float(v) for k, v in val_metrics.items()})
 
                     # calculate mean metrics
+                    # todo agg function
                     metrics['val'] = {
                         metric: np.array([dic[metric] for dic in step_metrics]).mean() for metric in step_metrics[0]
                     }
 
                 elif mode == 'epoch':
-                    self._context['_data_loader'] = val_loader
-                    val_metrics = self._bound_functions['val_epoch'](self._context)
+                    val_metrics = self._bound_functions['val_epoch'](data_loader=val_loader, model=self._model,
+                                                                     is_validate=True, optimizers=self._optimizers)
                     assert isinstance(val_metrics, dict), '"val_epoch" should return a metrics dict.'
                     metrics['val'] = {k: float(v) for k, v in val_metrics.items()}
 
-                # logging
-                log_str = f'[Epoch {epoch} / Val] ' + \
-                          ' '.join([f'{k}: {v}' for k, v in metrics['val'].items()])
-                t.info(log_str)
+                self._logger.log_epoch(metrics['val'], epoch, is_validate=True)
 
-            # dump metrics as yaml
-            with (log_path / 'metrics.yaml').open('a') as fh:
-                fh.write(yaml.dump({epoch: metrics}))
+                status_str = f'[Epoch {epoch} / Val]   ' \
+                             + ' '.join([f'{k}: {self._round(v)}' for k, v in metrics['val'].items()])
+                t.success(status_str)
 
-            if self._primary_metric is None:
+            if self._checkpoint_metric is None:
                 metric = list(val_metrics.keys())[0]
-                logger.info(f'Using "{metric}" as primary metric')
-                self._primary_metric = metric
+                self.writer.info(f'Using "{metric}" as checkpointing metric')
+                self._checkpoint_metric = metric
 
             # save checkpoint
-            if self._config['save_every'] or \
-                    (self._config['smaller_is_better'] and val_metrics[self._primary_metric] < best_val) or \
-                    (not self._config['smaller_is_better'] and val_metrics[self._primary_metric] > best_val):
+            if (self._smaller_is_better and metrics['val'][self._checkpoint_metric] < best_val) or \
+                    (not self._smaller_is_better and metrics['val'][self._checkpoint_metric] > best_val):
 
-                with logger.task(f'Saving checkpoint at epoch {epoch}'):
+                with self.writer.task(f'Saving checkpoint at epoch {epoch}'):
                     checkpoint = {
-                        'model': self._context['_model'].state_dict(),
-                        'optim': self._get_optim_states(),
+                        'model': self._model.state_dict(),
+                        'optimizers': {name: optim.state_dict() for name, optim in self._optimizers.items()},
                         'epoch': epoch + 1
                     }
                     checkpoint_path = log_path / 'checkpoints' / f'epoch_{epoch}.pt'
                     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
                     torch.save(checkpoint, checkpoint_path)
+                    # delete old checkpoint
+                    (log_path / 'checkpoints' / f'epoch_{best_epoch}.pt').unlink(missing_ok=True)
 
-                best_val = val_metrics[self._primary_metric]
+                best_val = metrics['val'][self._checkpoint_metric]
+                best_epoch = epoch
 
-        logger.success(f'Training finished')
+        self.writer.success(f'Training finished')
 
-    def __call__(self):
-        self.run()
+    def _optim_step(self, metrics):
+        if self._optimize_metric is None:
+            metric = list(metrics.keys())[0]
+            self.writer.info(f'Selected metric "{metric}" for minimization')
+            self._optimize_metric = metric
+
+        for optimizer in self._optimizers.values():
+            optimizer.zero_grad()
+            metrics[self._optimize_metric].backward()
+            optimizer.step()
 
     def add_config(self, path):
         self._config_files.append(path)
+
+    @functools.wraps(run)
+    def __call__(self, *args, **kwargs):
+        self.run(*args, **kwargs)
+
+    def __getitem__(self, item):
+        return self._config[item]
 
     # DECORATORS #
 
@@ -242,21 +290,13 @@ class Run:
         self._bound_functions['val_epoch'] = f
         return make_wrapper(f)
 
-    def _get_optim_states(self):
-        optimizers = {}
-
-        def get_recursive(dic, path=[]):
-            for key, value in dic.items():
-                if isinstance(value, dict):
-                    get_recursive(value, path + [key])
-                elif issubclass(type(value), torch.optim.Optimizer):
-                    optimizers['.'.join(path + [key])] = value.state_dict()
-
-        get_recursive(self._context)
-        return optimizers
+    def configure_optimizers(self, f):
+        self._bound_functions['configure_optimizers'] = f
+        return make_wrapper(f)
 
     def _set_optim_states(self, state_dicts):
-        for path, state in state_dicts:
-            optimizer = get_by_path(self._context, path)
-            optimizer.load_state_dict(state)
+        for name, state in state_dicts:
+            self._optimizers[name].load_state_dict(state)
 
+    def _round(self, value):
+        return round(value, 4)
