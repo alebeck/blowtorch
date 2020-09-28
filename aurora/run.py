@@ -1,19 +1,19 @@
-from typing import Optional, List
-from pathlib import Path
 from datetime import datetime
+from typing import Optional, List, Union
+from pathlib import Path
 import functools
 
-import yaml
 import numpy as np
 import torch
 from torch import cuda
 from torch.utils.data import Dataset, DataLoader
+from coolname import generate_slug
 
-from .utils import make_wrapper, get_terminal_writer
+from .utils import make_wrapper, get_terminal_writer, get_highest_run, std_round
 from .config import TrainingConfig
 from .bound_functions import BoundFunctions
 from .apply_func import move_data_to_device  # todo hook
-from .loggers import BaseLogger
+from .loggers import BaseLogger, LoggerSet, StandardLogger
 
 
 class Run:
@@ -24,12 +24,15 @@ class Run:
         self._model = None
         self._train_set = None
         self._val_set = None
+        self._logger = None
         self._batch_size = None
         self._num_workers = None
         self._max_epochs = None
         self._use_gpu = None
         self._gpu_id = None
         self._resume = None
+        self._save_path = None
+        self._run_name = None
         self._optimize_metric = None
         self._checkpoint_metric = None
         self._smaller_is_better = None  # TODO state which to minimize/checkpoint on in result dict
@@ -69,13 +72,15 @@ class Run:
             model: torch.nn.Module,
             train_set: Dataset,
             val_set: Dataset,
-            logger: BaseLogger,
+            loggers: List[BaseLogger],
             batch_size=1,
             num_workers=0,
             max_epochs=1,
             use_gpu=True,
             gpu_id=0,
-            resume=False,
+            resume: Optional[Union[str, Path]] = None,
+            save_path='aurora',
+            run_name=None,
             optimize_metric=None,
             checkpoint_metric=None,
             smaller_is_better=True,
@@ -84,13 +89,14 @@ class Run:
         self._model = model
         self._train_set = train_set
         self._val_set = val_set
-        self._logger = logger
         self._batch_size = batch_size
         self._num_workers = num_workers
         self._max_epochs = max_epochs
         self._use_gpu = use_gpu
         self._gpu_id = gpu_id
         self._resume = resume
+        self._run_name = run_name
+        self._save_path = save_path
         self._optimize_metric = optimize_metric
         self._checkpoint_metric = checkpoint_metric
         self._smaller_is_better = smaller_is_better
@@ -98,9 +104,18 @@ class Run:
 
         self.writer = get_terminal_writer()
 
-        self._logger.log_config(self._config.get_raw_config())
+        self._save_path = Path(self._save_path)
 
-        log_path = Path('training_logs') / datetime.now().strftime("%y-%m-%d_%H-%M-%S")
+        if self._run_name is None:
+            self._run_name = generate_slug(2)
+        self._run_name += f'-{get_highest_run(self._save_path) + 1}'
+        self._save_path = self._save_path / (datetime.now().strftime("%y-%m-%d_%H-%M-%S") + '_' + self._run_name)
+        self._save_path.mkdir(parents=True, exist_ok=False)
+
+        if not isinstance(loggers, (list, tuple)):
+            loggers = [loggers]
+        self._logger = LoggerSet([StandardLogger()] + loggers)
+        self._logger.setup(self._save_path, self._run_name)
 
         if 'train_step' in self._bound_functions and 'val_step' in self._bound_functions:
             mode = 'step'
@@ -115,8 +130,13 @@ class Run:
 
         # load checkpoint
         if self._resume:
+            self._resume = Path(self._resume)
             with self.writer.task('Loading checkpoint'):
-                checkpoint = torch.load(self._resume)
+                if self._resume.is_dir():
+                    filename = sorted(list(self._resume.iterdir()))[-1]
+                    checkpoint = torch.load(self._resume / filename)
+                else:
+                    checkpoint = torch.load(self._resume)
                 self._model.load_state_dict(checkpoint['model'])
                 start_epoch = checkpoint['epoch']
 
@@ -133,7 +153,7 @@ class Run:
             self._model.cuda(device=self._gpu_id)
             self.writer.info(f'Using GPU [{self._gpu_id}]')
 
-        self._logger.introduce_model(self._model)
+        self._logger.before_training_start(self._config.get_raw_config(), self._model, self._bound_functions)
 
         self._optimizers = self._bound_functions['configure_optimizers'](model=self._model)
         if not isinstance(self._optimizers, dict):
@@ -180,10 +200,10 @@ class Run:
                     assert isinstance(train_metrics, dict), '"train_epoch" should return a metrics dict.'
                     metrics['train'] = {k: float(v) for k, v in train_metrics.items()}
 
-                self._logger.log_epoch(metrics['train'], epoch, is_validate=False)
+                self._logger.after_pass(metrics['train'], epoch, is_validate=False)
 
                 status_str = f'[Epoch {epoch} / Train] ' \
-                             + ' '.join([f'{k}: {self._round(v)}' for k, v in metrics['train'].items()])
+                             + ' '.join([f'{k}: {std_round(v)}' for k, v in metrics['train'].items()])
                 t.success(status_str)
 
             # val
@@ -213,10 +233,10 @@ class Run:
                     assert isinstance(val_metrics, dict), '"val_epoch" should return a metrics dict.'
                     metrics['val'] = {k: float(v) for k, v in val_metrics.items()}
 
-                self._logger.log_epoch(metrics['val'], epoch, is_validate=True)
+                self._logger.after_pass(metrics['val'], epoch, is_validate=True)
 
                 status_str = f'[Epoch {epoch} / Val]   ' \
-                             + ' '.join([f'{k}: {self._round(v)}' for k, v in metrics['val'].items()])
+                             + ' '.join([f'{k}: {std_round(v)}' for k, v in metrics['val'].items()])
                 t.success(status_str)
 
             if self._checkpoint_metric is None:
@@ -234,11 +254,11 @@ class Run:
                         'optimizers': {name: optim.state_dict() for name, optim in self._optimizers.items()},
                         'epoch': epoch + 1
                     }
-                    checkpoint_path = log_path / 'checkpoints' / f'epoch_{epoch}.pt'
+                    checkpoint_path = self._save_path / 'checkpoints' / f'epoch_{epoch}.pt'
                     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
                     torch.save(checkpoint, checkpoint_path)
                     # delete old checkpoint
-                    (log_path / 'checkpoints' / f'epoch_{best_epoch}.pt').unlink(missing_ok=True)
+                    (self._save_path / 'checkpoints' / f'epoch_{best_epoch}.pt').unlink(missing_ok=True)
 
                 best_val = metrics['val'][self._checkpoint_metric]
                 best_epoch = epoch
@@ -297,6 +317,3 @@ class Run:
     def _set_optim_states(self, state_dicts):
         for name, state in state_dicts:
             self._optimizers[name].load_state_dict(state)
-
-    def _round(self, value):
-        return round(value, 4)

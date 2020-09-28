@@ -58,3 +58,10 @@ class BoundFunctions:
 
     def __contains__(self, item):
         return item in self.functions
+
+    def items(self):
+        return self.functions.items()
+
+    def values(self):
+        return self.functions.values()
+

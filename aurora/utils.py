@@ -1,7 +1,6 @@
-import logging
 import time
 from functools import wraps
-import traceback
+from pathlib import Path
 
 from halo import Halo
 from tqdm import tqdm
@@ -55,64 +54,58 @@ class _TQDM(tqdm):
 		pass
 
 
-_spinner_halo = None
-
-
 class _Spinner:
 
 	def __init__(self, text):
-		global _spinner_halo
 		self._text = text
-		#self._halo = Halo(text)
-		if _spinner_halo is None:
-			_spinner_halo = Halo(text)
+		self._halo = Halo(text)
 
 	def __enter__(self):
-		_spinner_halo.start()
+		self._halo.start()
 		return self
 
 	def __exit__(self, exc_type, exc_val, exc_tb):
-		if _spinner_halo._stop_spinner.is_set():
+		if self._halo._stop_spinner.is_set():
 			return
 
 		if exc_type is None:
-			_spinner_halo.succeed()
+			self._halo.succeed()
 		else:
-			_spinner_halo.fail()
+			self._halo.fail()
 
 		time.sleep(0.1)
-		_spinner_halo.stop()
+		self._halo.stop()
 
 	def tqdm(self, iterable):
-		orig_text = _spinner_halo.text
+		orig_text = self._halo.text
 
 		def callback(f_dic):
 			# format: Training epoch 2 (batch 1233/56990, 10:00 elapsed, 11:31 left)
 			remaining = (f_dic['total'] - f_dic['n']) / f_dic['rate'] if f_dic['rate'] and f_dic['total'] else 0
 			remaining_str = tqdm.format_interval(remaining) if f_dic['rate'] else '?'
 			elapsed_str = tqdm.format_interval(f_dic["elapsed"])
-			_spinner_halo.text = \
+			self._halo.text = \
 				f'{orig_text} (batch {f_dic["n"] + 1}/{f_dic["total"]}, {elapsed_str} elapsed, {remaining_str} left)'
 
 		return _TQDM(iterable, callback=callback)
 
 	def info(self, text=None):
-		_spinner_halo.info(text)
+		self._halo.info(text)
 
 	def warning(self, text=None):
 		if text is None:
 			text = self._text
-		_spinner_halo.warn(text)
+		self._halo.warn(text)
 
 	def success(self, text=None):
 		if text is None:
 			text = self._text
-		_spinner_halo.succeed(text)
+		self._halo.succeed(text)
 
 	def error(self, text=None):
 		if text is None:
 			text = self._text
-		_spinner_halo.fail(text)
+		self._halo.fail(text)
 
 
 class _TerminalWriter:
@@ -149,3 +142,20 @@ def get_terminal_writer():
 
 	_logger = _TerminalWriter()
 	return _logger
+
+
+def get_highest_run(save_path: Path):
+	highest = 0
+	for path in save_path.iterdir():
+		num = path.name.split('-')[-1]
+		try:
+			if int(num) > highest:
+				highest = int(num)
+		except:
+			pass
+
+	return highest
+
+
+def std_round(value):
+	return round(value, 4)

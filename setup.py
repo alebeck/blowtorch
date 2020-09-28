@@ -7,5 +7,5 @@ setup(
     author='Alexander Becker',
     python_requires='>= 3.6',
     packages=find_packages(),
-    install_requires=['colorama', 'PyYAML>=5.1.2', 'halo']
+    install_requires=['colorama', 'PyYAML>=5.1.2', 'halo', 'coolname', 'tqdm']
 )
