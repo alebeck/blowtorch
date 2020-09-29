@@ -9,10 +9,11 @@ from torch import cuda
 from torch.utils.data import Dataset, DataLoader
 from coolname import generate_slug
 
+from .backends.cpu_backend import CPUBackend
+from .backends.gpu_backend import GPUBackend
 from .utils import make_wrapper, get_terminal_writer, get_highest_run, std_round
 from .config import TrainingConfig
 from .bound_functions import BoundFunctions
-from .apply_func import move_data_to_device  # todo hook
 from .loggers import BaseLogger, LoggerSet, StandardLogger
 
 
@@ -21,6 +22,7 @@ class Run:
     def __init__(self, config_files: Optional[List]):
         self._bound_functions = BoundFunctions()
         self._config = None
+        self._backend = None
         self._model = None
         self._train_set = None
         self._val_set = None
@@ -142,22 +144,22 @@ class Run:
 
         train_loader, val_loader = self._init_data()
 
-        # GPU config
+        # Backend initialization
         if not torch.cuda.device_count() > self._gpu_id:
             err_str = f'GPU [{self._gpu_id}] is not available.'
             self.writer.error(err_str)
             raise ValueError(err_str)
 
-        self._use_gpu = self._use_gpu and cuda.is_available()
-        if self._use_gpu:
-            self._model.cuda(device=self._gpu_id)
-            self.writer.info(f'Using GPU [{self._gpu_id}]')
+        if self._use_gpu and cuda.is_available():
+            self._backend = GPUBackend(self._gpu_id)
+        else:
+            self._backend = CPUBackend()
 
-        self._logger.before_training_start(self._config.get_raw_config(), self._model, self._bound_functions)
-
-        self._optimizers = self._bound_functions['configure_optimizers'](model=self._model)
+        self._optimizers = self._backend.setup(self._model, self._bound_functions['configure_optimizers'])
         if not isinstance(self._optimizers, dict):
             self._optimizers = {'main': self._optimizers}
+
+        self._logger.before_training_start(self._config.get_raw_config(), self._model, self._bound_functions)
 
         if self._resume:
             self.writer.info(f'Resuming training from checkpoint {self._resume}')
@@ -177,11 +179,14 @@ class Run:
                 if mode == 'step':
                     step_metrics = []
                     for batch in t.tqdm(train_loader):
-                        if self._use_gpu:
-                            batch = move_data_to_device(batch, torch.device(self._gpu_id))
+                        batch = self._backend.to_device(batch)
 
-                        train_metrics = self._bound_functions['train_step'](batch=batch, model=self._model,
-                                                                            is_validate=False)
+                        train_metrics = self._backend.train_step(
+                            self._bound_functions['train_step'],
+                            batch=batch,
+                            model=self._model,
+                            is_validate=False
+                        )
                         assert isinstance(train_metrics, dict), '"train_step" should return a metrics dict.'
 
                         if epoch > 0:
@@ -195,10 +200,11 @@ class Run:
                     }
 
                 elif mode == 'epoch':
-                    train_metrics = self._bound_functions['train_epoch'](data_loader=train_loader, model=self._model,
-                                                                         is_validate=False, optimizers=self._optimizers)
-                    assert isinstance(train_metrics, dict), '"train_epoch" should return a metrics dict.'
-                    metrics['train'] = {k: float(v) for k, v in train_metrics.items()}
+                    # train_metrics = self._bound_functions['train_epoch'](data_loader=train_loader, model=self._model,
+                    #                                                    is_validate=False, optimizers=self._optimizers)
+                    # assert isinstance(train_metrics, dict), '"train_epoch" should return a metrics dict.'
+                    # metrics['train'] = {k: float(v) for k, v in train_metrics.items()}
+                    raise NotImplementedError()  # TODO wrap dataloader generator ?
 
                 self._logger.after_pass(metrics['train'], epoch, is_validate=False)
 
@@ -213,11 +219,15 @@ class Run:
                 if mode == 'step':
                     step_metrics = []
                     for batch in t.tqdm(val_loader):
-                        if self._use_gpu:
-                            batch = move_data_to_device(batch, torch.device(self._gpu_id))
+                        batch = self._backend.to_device(batch)
 
-                        val_metrics = self._bound_functions['val_step'](batch=batch, model=self._model,
-                                                                        is_validate=True)
+                        val_metrics = self._backend.val_step(
+                            self._bound_functions['val_step'],
+                            batch=batch,
+                            model=self._model,
+                            is_validate=True
+                        )
+
                         assert isinstance(val_metrics, dict), '"val_step" should return a metrics dict.'
                         step_metrics.append({k: float(v) for k, v in val_metrics.items()})
 
@@ -228,10 +238,11 @@ class Run:
                     }
 
                 elif mode == 'epoch':
-                    val_metrics = self._bound_functions['val_epoch'](data_loader=val_loader, model=self._model,
-                                                                     is_validate=True, optimizers=self._optimizers)
-                    assert isinstance(val_metrics, dict), '"val_epoch" should return a metrics dict.'
-                    metrics['val'] = {k: float(v) for k, v in val_metrics.items()}
+                    # val_metrics = self._bound_functions['val_epoch'](data_loader=val_loader, model=self._model,
+                    #                                                  is_validate=True, optimizers=self._optimizers)
+                    # assert isinstance(val_metrics, dict), '"val_epoch" should return a metrics dict.'
+                    # metrics['val'] = {k: float(v) for k, v in val_metrics.items()}
+                    raise NotImplementedError()
 
                 self._logger.after_pass(metrics['val'], epoch, is_validate=True)
 
