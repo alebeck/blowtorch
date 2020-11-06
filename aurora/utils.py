@@ -1,9 +1,15 @@
 import time
+import random
 from functools import wraps
 from pathlib import Path
 
 from halo import Halo
 from tqdm import tqdm
+import torch
+import numpy as np
+
+
+AMP_AVALAIBLE = hasattr(torch.cuda, "amp") and hasattr(torch.cuda.amp, "autocast")
 
 
 def make_wrapper(f):
@@ -59,6 +65,7 @@ class _Spinner:
 	def __init__(self, text):
 		self._text = text
 		self._halo = Halo(text)
+		self._current_metrics = None
 
 	def __enter__(self):
 		self._halo.start()
@@ -84,10 +91,18 @@ class _Spinner:
 			remaining = (f_dic['total'] - f_dic['n']) / f_dic['rate'] if f_dic['rate'] and f_dic['total'] else 0
 			remaining_str = tqdm.format_interval(remaining) if f_dic['rate'] else '?'
 			elapsed_str = tqdm.format_interval(f_dic["elapsed"])
+			if self._current_metrics is not None:
+				metrics_text = ''.join(f'{k}: {v}, ' for k, v in self._current_metrics.items())
+			else:
+				metrics_text = ''
 			self._halo.text = \
-				f'{orig_text} (batch {f_dic["n"] + 1}/{f_dic["total"]}, {elapsed_str} elapsed, {remaining_str} left)'
+				f'{orig_text} ({metrics_text}' \
+				f'batch {f_dic["n"] + 1}/{f_dic["total"]}, {elapsed_str} elapsed, {remaining_str} left)'
 
 		return _TQDM(iterable, callback=callback)
+
+	def set_current_metrics(self, metric_dict):
+		self._current_metrics = metric_dict
 
 	def info(self, text=None):
 		self._halo.info(text)
@@ -159,3 +174,15 @@ def get_highest_run(save_path: Path):
 
 def std_round(value):
 	return round(value, 4)
+
+
+def seed_all(seed):
+	random.seed(seed)
+	np.random.seed(seed)
+	torch.manual_seed(seed)
+	torch.set_deterministic(True)
+	try:
+		torch.backends.cudnn.benchmark = False
+		torch.backends.cudnn.deterministic = True
+	except:
+		pass

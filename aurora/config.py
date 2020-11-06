@@ -9,7 +9,7 @@ from .utils import deep_merge, set_by_path
 
 
 # These default values are automatically set if not specified explicitly.
-_defaults = {}
+_defaults = {'random_seed': 12345}
 
 # These keys are required and have to be set within the configuration.
 _required = []

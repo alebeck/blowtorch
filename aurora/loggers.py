@@ -87,11 +87,11 @@ class WandbLogger(BaseLogger):
     def setup(self, save_path: Path, run_name: str):
         if 'name' in self._wandb_args:
             del self._wandb_args['name']
-        self.wandb.init(name=run_name, **self._wandb_args)
+        self.wandb.init(name=run_name, dir=save_path, **self._wandb_args)
 
     def before_training_start(self, config: dict, model: nn.Module, bound_functions: BoundFunctions):
         self.wandb.config.update(config)
-        self.wandb.watch(model)
+        #self.wandb.watch(model)
 
     def after_pass(self, metrics: dict, epoch: int, is_validate: bool = False):
         prefix = 'val_' if is_validate else 'train_'

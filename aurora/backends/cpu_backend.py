@@ -18,5 +18,8 @@ class CPUBackend(BaseBackend):
     def val_step(self, val_fn, **val_fn_args):
         return val_fn(**val_fn_args)
 
+    def optim_step(self, tensor):
+        raise NotImplementedError()
+
     def to_device(self, data):
         return data

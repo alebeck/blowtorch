@@ -1,17 +1,18 @@
 from datetime import datetime
 from typing import Optional, List, Union
 from pathlib import Path
+import random
 import functools
 
 import numpy as np
 import torch
-from torch import cuda
 from torch.utils.data import Dataset, DataLoader
-from coolname import generate_slug
+from coolname import generate_slug, replace_random
 
+from aurora import _writer as writer
 from .backends.cpu_backend import CPUBackend
 from .backends.gpu_backend import GPUBackend
-from .utils import make_wrapper, get_terminal_writer, get_highest_run, std_round
+from .utils import make_wrapper, get_highest_run, std_round, seed_all
 from .config import TrainingConfig
 from .bound_functions import BoundFunctions
 from .loggers import BaseLogger, LoggerSet, StandardLogger
@@ -24,8 +25,6 @@ class Run:
         self._config = None
         self._backend = None
         self._model = None
-        self._train_set = None
-        self._val_set = None
         self._logger = None
         self._batch_size = None
         self._num_workers = None
@@ -38,11 +37,11 @@ class Run:
         self._optimize_metric = None
         self._checkpoint_metric = None
         self._smaller_is_better = None  # TODO state which to minimize/checkpoint on in result dict
+        self._optimize_first = None
         self._collate_fn = None
-        self._optimizers = None
+        self._enable_amp = None
         self._is_validate = None
         self._config_files = []
-        self.writer = None
 
         # TODO support run() args in config
         if config_files is None:
@@ -50,18 +49,6 @@ class Run:
         for file in config_files:
             self.add_config(file)
         self._config = TrainingConfig(self._config_files)
-
-    def _init_data(self):
-        if isinstance(self._batch_size, tuple):
-            batch_size_train, batch_size_val = self._batch_size
-        else:
-            batch_size_train, batch_size_val = self._batch_size, self._batch_size
-
-        train_loader = DataLoader(self._train_set, batch_size_train, num_workers=self._num_workers,
-                                  shuffle=True, collate_fn=self._collate_fn)
-        val_loader = DataLoader(self._val_set, batch_size_val, num_workers=self._num_workers, shuffle=False,
-                                collate_fn=self._collate_fn)
-        return train_loader, val_loader
 
     # TODO types, docstrings
     # TODO pin_memory
@@ -72,25 +59,26 @@ class Run:
     # todo look at pl GPUbackend (amp optimizuation etc)
     def run(self,
             model: torch.nn.Module,
-            train_set: Dataset,
-            val_set: Dataset,
-            loggers: List[BaseLogger],
+            train_loader: DataLoader,
+            val_loader: DataLoader,
+            loggers: Optional[List[BaseLogger]] = None,
             batch_size=1,
             num_workers=0,
             max_epochs=1,
             use_gpu=True,
             gpu_id=0,
             resume: Optional[Union[str, Path]] = None,
-            save_path='aurora',
+            save_path='train_logs',
             run_name=None,
             optimize_metric=None,
             checkpoint_metric=None,
             smaller_is_better=True,
-            collate_fn=None
+            optimize_first=False,
+            collate_fn=None,
+            enable_amp=False,
+            detect_anomalies=False
             ):
         self._model = model
-        self._train_set = train_set
-        self._val_set = val_set
         self._batch_size = batch_size
         self._num_workers = num_workers
         self._max_epochs = max_epochs
@@ -102,11 +90,15 @@ class Run:
         self._optimize_metric = optimize_metric
         self._checkpoint_metric = checkpoint_metric
         self._smaller_is_better = smaller_is_better
+        self._optimize_first = optimize_first
         self._collate_fn = collate_fn
-
-        self.writer = get_terminal_writer()
+        self._enable_amp = enable_amp
 
         self._save_path = Path(self._save_path)
+        self._save_path.mkdir(parents=True, exist_ok=True)
+
+        # assign new random.Random() instance to coolname, such that slugs are different even though we have seeded
+        replace_random(random.Random())
 
         if self._run_name is None:
             self._run_name = generate_slug(2)
@@ -114,6 +106,8 @@ class Run:
         self._save_path = self._save_path / (datetime.now().strftime("%y-%m-%d_%H-%M-%S") + '_' + self._run_name)
         self._save_path.mkdir(parents=True, exist_ok=False)
 
+        if loggers is None:
+            loggers = []
         if not isinstance(loggers, (list, tuple)):
             loggers = [loggers]
         self._logger = LoggerSet([StandardLogger()] + loggers)
@@ -125,15 +119,24 @@ class Run:
             mode = 'epoch'
         else:
             err_str = 'Need to register either both train_step/val_step or both train_epoch/val_epoch functions.'
-            self.writer.error(err_str)
+            writer.error(err_str)
             raise ValueError(err_str)
 
-        start_epoch = 0
+        # Backend initialization
+        try:
+            if self._use_gpu:
+                self._backend = GPUBackend(self._gpu_id, self._enable_amp)
+            else:
+                self._backend = CPUBackend()
+        except Exception as e:
+            writer.error(str(e))
+            raise
 
         # load checkpoint
+        start_epoch = 0
         if self._resume:
             self._resume = Path(self._resume)
-            with self.writer.task('Loading checkpoint'):
+            with writer.task('Loading checkpoint'):
                 if self._resume.is_dir():
                     filename = sorted(list(self._resume.iterdir()))[-1]
                     checkpoint = torch.load(self._resume / filename)
@@ -142,29 +145,18 @@ class Run:
                 self._model.load_state_dict(checkpoint['model'])
                 start_epoch = checkpoint['epoch']
 
-        train_loader, val_loader = self._init_data()
+        self._backend.setup(self._model, self._bound_functions['configure_optimizers'])
+        writer.info(f'Using {self._backend.get_name()}')
 
-        # Backend initialization
-        if not torch.cuda.device_count() > self._gpu_id:
-            err_str = f'GPU [{self._gpu_id}] is not available.'
-            self.writer.error(err_str)
-            raise ValueError(err_str)
-
-        if self._use_gpu and cuda.is_available():
-            self._backend = GPUBackend(self._gpu_id)
-        else:
-            self._backend = CPUBackend()
-
-        self._optimizers = self._backend.setup(self._model, self._bound_functions['configure_optimizers'])
-        if not isinstance(self._optimizers, dict):
-            self._optimizers = {'main': self._optimizers}
-
-        self._logger.before_training_start(self._config.get_raw_config(), self._model, self._bound_functions)
+        if not self._optimize_first:
+            writer.info('Not optimizing during first epoch')
 
         if self._resume:
-            self.writer.info(f'Resuming training from checkpoint {self._resume}')
+            writer.info(f'Resuming training from checkpoint {self._resume}')
             # resume optimizer state
             self._set_optim_states(checkpoint['optimizers'])
+
+        self._logger.before_training_start(self._config.get_raw_config(), self._model, self._bound_functions)
 
         best_val = float('inf') if self._smaller_is_better else 0.
         best_epoch = None
@@ -175,24 +167,42 @@ class Run:
             # train
             self._model.train()
 
-            with self.writer.task(f'Training epoch {epoch}') as t:
+            with writer.task(f'Training epoch {epoch}') as t:
                 if mode == 'step':
                     step_metrics = []
                     for batch in t.tqdm(train_loader):
                         batch = self._backend.to_device(batch)
 
-                        train_metrics = self._backend.train_step(
-                            self._bound_functions['train_step'],
-                            batch=batch,
-                            model=self._model,
-                            is_validate=False
-                        )
-                        assert isinstance(train_metrics, dict), '"train_step" should return a metrics dict.'
+                        with torch.autograd.set_detect_anomaly(detect_anomalies):
+                            train_metrics = self._backend.train_step(
+                                self._bound_functions['train_step'],
+                                batch=batch,
+                                model=self._model,
+                                is_validate=False,
+                                device=self._backend.device,
+                                epoch=epoch
+                            )
+                            assert isinstance(train_metrics, dict), '"train_step" should return a metrics dict.'
 
-                        if epoch > 0:
-                            self._optim_step(train_metrics)
+                            if self._optimize_metric is None:
+                                metric = list(train_metrics.keys())[0]  # TODO possibility to state which one to optimize
+                                writer.info(f'Selected metric "{metric}" for minimization')
+                                self._optimize_metric = metric
 
+                            if self._optimize_first or epoch > 0:
+                                self._backend.optim_step(train_metrics[self._optimize_metric])
+
+                        t.set_current_metrics({
+                            self._optimize_metric: std_round(train_metrics[self._optimize_metric].item())})
                         step_metrics.append({k: float(v) for k, v in train_metrics.items()})
+
+                        if 'after_train_step' in self._bound_functions:
+                            self._bound_functions['after_train_step'](
+                                model=self._model,
+                                is_validate=False,
+                                device=self._backend.device,
+                                epoch=epoch
+                            )
 
                     # calculate mean metrics
                     metrics['train'] = {
@@ -215,7 +225,7 @@ class Run:
             # val
             self._model.eval()
 
-            with self.writer.task(f'Validating epoch {epoch}') as t:
+            with writer.task(f'Validating epoch {epoch}') as t:
                 if mode == 'step':
                     step_metrics = []
                     for batch in t.tqdm(val_loader):
@@ -225,10 +235,14 @@ class Run:
                             self._bound_functions['val_step'],
                             batch=batch,
                             model=self._model,
-                            is_validate=True
+                            is_validate=True,
+                            device=self._backend.device,
+                            epoch=epoch
                         )
 
                         assert isinstance(val_metrics, dict), '"val_step" should return a metrics dict.'
+                        t.set_current_metrics({
+                            self._optimize_metric: std_round(val_metrics[self._optimize_metric].item())})
                         step_metrics.append({k: float(v) for k, v in val_metrics.items()})
 
                     # calculate mean metrics
@@ -244,6 +258,9 @@ class Run:
                     # metrics['val'] = {k: float(v) for k, v in val_metrics.items()}
                     raise NotImplementedError()
 
+                # TODO specify metric to do scheduling on
+                self._backend.scheduler_step(metrics['val'][self._optimize_metric])
+
                 self._logger.after_pass(metrics['val'], epoch, is_validate=True)
 
                 status_str = f'[Epoch {epoch} / Val]   ' \
@@ -252,17 +269,17 @@ class Run:
 
             if self._checkpoint_metric is None:
                 metric = list(val_metrics.keys())[0]
-                self.writer.info(f'Using "{metric}" as checkpointing metric')
+                writer.info(f'Selected metric "{metric}" for checkpointing')
                 self._checkpoint_metric = metric
 
             # save checkpoint
             if (self._smaller_is_better and metrics['val'][self._checkpoint_metric] < best_val) or \
                     (not self._smaller_is_better and metrics['val'][self._checkpoint_metric] > best_val):
 
-                with self.writer.task(f'Saving checkpoint at epoch {epoch}'):
+                with writer.task(f'Saving checkpoint at epoch {epoch}'):
                     checkpoint = {
                         'model': self._model.state_dict(),
-                        'optimizers': {name: optim.state_dict() for name, optim in self._optimizers.items()},
+                        'optimizers': {name: optim.state_dict() for name, optim in self._backend.optimizers.items()},
                         'epoch': epoch + 1
                     }
                     checkpoint_path = self._save_path / 'checkpoints' / f'epoch_{epoch}.pt'
@@ -274,21 +291,13 @@ class Run:
                 best_val = metrics['val'][self._checkpoint_metric]
                 best_epoch = epoch
 
-        self.writer.success(f'Training finished')
-
-    def _optim_step(self, metrics):
-        if self._optimize_metric is None:
-            metric = list(metrics.keys())[0]
-            self.writer.info(f'Selected metric "{metric}" for minimization')
-            self._optimize_metric = metric
-
-        for optimizer in self._optimizers.values():
-            optimizer.zero_grad()
-            metrics[self._optimize_metric].backward()
-            optimizer.step()
+        writer.success(f'Training finished')
 
     def add_config(self, path):
         self._config_files.append(path)
+
+    def seed_all(self, seed):
+        seed_all(seed)
 
     @functools.wraps(run)
     def __call__(self, *args, **kwargs):
@@ -309,6 +318,10 @@ class Run:
         self._bound_functions['train_step'] = f
         return make_wrapper(f)
 
+    def after_train_step(self, f):
+        self._bound_functions['after_train_step'] = f
+        return make_wrapper(f)
+
     def validate_step(self, f):
         self._bound_functions['val_step'] = f
         return make_wrapper(f)
@@ -327,4 +340,4 @@ class Run:
 
     def _set_optim_states(self, state_dicts):
         for name, state in state_dicts:
-            self._optimizers[name].load_state_dict(state)
+            self._backend.optimizers[name].load_state_dict(state)

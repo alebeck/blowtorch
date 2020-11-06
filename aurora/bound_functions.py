@@ -4,8 +4,9 @@ from .utils import get_terminal_writer
 
 
 AVAILABLE_PARAMS = {
-    'train_step': ['batch', 'model', 'is_validate'],
-    'val_step': ['batch', 'model', 'is_validate'],
+    'train_step': ['batch', 'model', 'is_validate', 'device', 'epoch'],
+    'after_train_step': ['model', 'is_validate', 'device', 'epoch'],
+    'val_step': ['batch', 'model', 'is_validate', 'device', 'epoch'],
     'train_epoch': ['data_loader', 'model', 'is_validate', 'optimizers'],
     'val_epoch': ['data_loader', 'model', 'is_validate', 'optimizers'],
     'configure_optimizers': ['model']

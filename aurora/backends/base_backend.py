@@ -6,8 +6,7 @@ class BaseBackend:
     @abstractmethod
     def setup(self, model, config_optimizers_fn):
         """
-        Initializes backend, moves model to device etc.
-        Returns: dictionary of optimizers
+        Initializes backend, moves model to device and also initializes optimizers.
         """
         pass
 
@@ -27,6 +26,17 @@ class BaseBackend:
         """
         Executes the val step given the user defined val step function.
         """
+        pass
+
+    @abstractmethod
+    def optim_step(self, tensor):
+        """
+        Executes one backward pass, starting with the given tensor and calls step() on all optimizers.
+        """
+        pass
+
+    @abstractmethod
+    def scheduler_step(self, val_loss):
         pass
 
     @abstractmethod
