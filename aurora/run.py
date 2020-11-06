@@ -10,7 +10,7 @@ from torch.utils.data import Dataset, DataLoader
 from coolname import generate_slug, replace_random
 
 from aurora import _writer as writer
-from .backends.cpu_backend import CPUBackend
+from aurora.backends.cpu_backend import CPUBackend
 from .backends.gpu_backend import GPUBackend
 from .utils import make_wrapper, get_highest_run, std_round, seed_all
 from .config import TrainingConfig
