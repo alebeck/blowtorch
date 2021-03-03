@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='aurora',
-    version='0.0.2',
+    version=0.2,
     description='Pytorch trainer',
     author='Alexander Becker',
     python_requires='>= 3.6',
