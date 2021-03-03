@@ -6,7 +6,7 @@ import functools
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 from coolname import generate_slug, replace_random
 
 from aurora import _writer as writer
@@ -296,15 +296,19 @@ class Run:
     def add_config(self, path):
         self._config_files.append(path)
 
-    def seed_all(self, seed):
+    def get_raw_config(self):
+        return self._config.get_raw_config()
+
+    def __getitem__(self, item):
+        return self._config[item]
+
+    @staticmethod
+    def seed_all(seed):
         seed_all(seed)
 
     @functools.wraps(run)
     def __call__(self, *args, **kwargs):
         self.run(*args, **kwargs)
-
-    def __getitem__(self, item):
-        return self._config[item]
 
     # DECORATORS #
 

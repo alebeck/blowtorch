@@ -1,6 +1,5 @@
 import inspect
 from abc import ABC, abstractmethod
-from datetime import datetime
 from pathlib import Path
 from typing import List
 
@@ -8,8 +7,6 @@ import yaml
 from aurora.bound_functions import BoundFunctions
 
 from torch import nn
-
-from .utils import std_round
 
 
 # TODO implement standardlogger and always use it
@@ -91,7 +88,7 @@ class WandbLogger(BaseLogger):
 
     def before_training_start(self, config: dict, model: nn.Module, bound_functions: BoundFunctions):
         self.wandb.config.update(config)
-        #self.wandb.watch(model)
+        # self.wandb.watch(model)
 
     def after_pass(self, metrics: dict, epoch: int, is_validate: bool = False):
         prefix = 'val_' if is_validate else 'train_'

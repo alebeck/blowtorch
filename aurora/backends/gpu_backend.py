@@ -4,7 +4,7 @@ from torch import cuda
 from aurora import _writer as writer
 from .base_backend import BaseBackend
 from .apply_func import move_data_to_device
-from ..utils import AMP_AVALAIBLE
+from ..utils import AMP_AVAILABLE
 
 
 class GPUBackend(BaseBackend):
@@ -20,7 +20,7 @@ class GPUBackend(BaseBackend):
         if not cuda.is_available() or not cuda.device_count() > self.gpu_id:
             raise ValueError(f'GPU [{self.gpu_id}] is not available.')
 
-        if enable_amp and not AMP_AVALAIBLE:
+        if enable_amp and not AMP_AVAILABLE:
             raise ValueError('AMP is not supported by your PyTorch version, try torch>=1.6.')
 
     def setup(self, model, config_optimizers_fn):
