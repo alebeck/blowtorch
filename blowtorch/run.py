@@ -20,14 +20,12 @@ from .loggers import BaseLogger, LoggerSet, StandardLogger
 
 class Run:
 
-    def __init__(self, config_files: Optional[List]):
+    def __init__(self, config_files: Optional[List], random_seed: int = None):
         self._bound_functions = BoundFunctions()
         self._config = None
         self._backend = None
         self._model = None
         self._logger = None
-        self._batch_size = None
-        self._num_workers = None
         self._max_epochs = None
         self._use_gpu = None
         self._gpu_id = None
@@ -50,6 +48,9 @@ class Run:
             self.add_config(file)
         self._config = TrainingConfig(self._config_files)
 
+        if random_seed:
+            seed_all(random_seed)
+
     # TODO types, docstrings
     # TODO pin_memory
     # todo clear cache before start
@@ -62,8 +63,6 @@ class Run:
             train_loader: DataLoader,
             val_loader: DataLoader,
             loggers: Optional[List[BaseLogger]] = None,
-            batch_size=1,
-            num_workers=0,
             max_epochs=1,
             use_gpu=True,
             gpu_id=0,
@@ -79,8 +78,6 @@ class Run:
             detect_anomalies=False
             ):
         self._model = model
-        self._batch_size = batch_size
-        self._num_workers = num_workers
         self._max_epochs = max_epochs
         self._use_gpu = use_gpu
         self._gpu_id = gpu_id
