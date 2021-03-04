@@ -1,3 +1,4 @@
+import sys
 import time
 import random
 from functools import wraps
@@ -9,7 +10,9 @@ import torch
 import numpy as np
 
 
-AMP_AVALAIBLE = hasattr(torch.cuda, "amp") and hasattr(torch.cuda.amp, "autocast")
+AMP_AVAILABLE = hasattr(torch.cuda, "amp") and hasattr(torch.cuda.amp, "autocast")
+IS_TTY = sys.stdout.isatty()
+NON_TTY_UPDATE_INTERVAL = 8000  # milliseconds
 
 
 def make_wrapper(f):
@@ -64,7 +67,8 @@ class _Spinner:
 
 	def __init__(self, text):
 		self._text = text
-		self._halo = Halo(text)
+		# if we're not in a tty, increase update interval to reduce log file sizes
+		self._halo = Halo(text, interval=(-1 if IS_TTY else NON_TTY_UPDATE_INTERVAL))
 		self._current_metrics = None
 
 	def __enter__(self):
