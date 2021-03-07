@@ -4,9 +4,9 @@ from pathlib import Path
 from typing import List
 
 import yaml
-from aurora.bound_functions import BoundFunctions
-
 from torch import nn
+
+from .bound_functions import BoundFunctions
 
 
 # TODO implement standardlogger and always use it

@@ -36,7 +36,23 @@ def deep_merge(a, b):
 	return a
 
 
+def get_by_path(dic, path):
+	"""
+	Gets a key (can be specified via dot notation `path`) in a nested `dic`
+	"""
+	parts = path.split('.')
+	loc = dic
+	for part in parts:
+		if part not in loc:
+			raise KeyError(path)
+		loc = loc[part]
+	return loc
+
+
 def set_by_path(dic, path, value):
+	"""
+	Sets a key (can be specified via dot notation `path`) in a nested `dic` to `value`
+	"""
 	parts = path.split('.')
 	loc = dic
 	for part in parts[:-1]:

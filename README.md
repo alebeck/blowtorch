@@ -1,109 +1,68 @@
-# aurora
+# blowtorch
 
-Intuitive, high-level training framework for research and development. It abstracts away lots of boilerplate normally associated with training and evaluating PyTorch models, without limiting your flexibility. Aurora provides the following:
+Intuitive, high-level training framework for research and development. It abstracts away boilerplate normally associated with training and evaluating PyTorch models, without limiting your flexibility. Blowtorch provides the following:
 
-* A way to specify training runs at a high level, while having fine-grained control over individual parts of the training
+* A way to specify training runs at a high level, while not giving up on fine-grained control over individual training parts
 * Automated checkpointing, logging and resuming of runs
 * A [sacred](https://github.com/IDSIA/sacred) inspired configuration management
 * Reproducibility by keeping track of configuration, code and random state of each run
 
 ## Installation
+Make sure you have `numpy` and `torch` installed, then install with pip:
 
-Make sure you have numpy and torch installed, then install with pip:
-
-```bash
-pip install git+https://github.com/alebeck/aurora
+```shell script
+pip install --upgrade blowtorch
 ```
 
-## Getting started
-
-A minimal working example can look like that:
-
-##### config.yaml
-```yaml
-data:
-  __type__: torchvision.datasets.MNIST
-  root: ./data
-  download: true
-
-model:
-  __type__: torchvision.models.vgg16
-  pretrained: true
-
-optimizer:
-  __type__: torch.optim.Adam
-
-loss_fn:
-  __type__: torch.nn.CrossEntropyLoss
-
-log_path: ./logs_mnist
-batch_size: 16
-epochs: 100
-```
-
-##### train.py
+## Minimal working example
 ```python
-from aurora import Run
+from torch.optim import Adam
+from torch.utils.data import DataLoader
+from torchvision.models import vgg16
+from torchvision.datasets import ImageNet
+from blowtorch import Run
 
-run = Run()
-run.add_config('./config.yaml')
+run = Run(random_seed=123)
 
-run()
-```
-
-Aurora will now take care of setting up data set and model and create a log directory inside `./logs_mnis`. There it will save the configuration, checkpoints, log files as well as training metrics. During the training, the user is constantly informed about training progress through the command line.
-
-
-## Customizing parts of your training
-Of course, training your model is not always as straight-forward as depicted in the example above. You could, for example, want to have finer control about what happens during each training step. This can be accomplished using aurora's decorators:
-
-```python
 @run.train_step
 @run.validate_step
-def step(_batch, _model, _optimizer, _is_validate):
-    x, y = _batch
-    y_hat = _model(x)
+def step(batch, model):
+    x, y = batch
+    y_hat = model(x)
     loss = (y - y_hat) ** 2
+    return loss
 
-    if not _is_validate:
-        _optimizer.zero_grad()
-        loss.backward()
-        _optimizer.step()
+# will be called when model has been moved to the desired device 
+@run.configure_optimizers
+def configure_optimizers(model):
+    return Adam(model.parameters())
+
+train_loader = DataLoader(ImageNet('.', split='train'), batch_size=4)
+val_loader = DataLoader(ImageNet('.', split='val'), batch_size=4)
+
+run(vgg16(), train_loader, val_loader)
 ```
 
-These lines of code register the `step` function as a handler for both training and validation steps. In the functions' parameter list, you can specify which things you need for the function and aurora will automatically inject them based on name. Parameters starting with `_` are so-called built-in parameters which will inject special values:
-
-* `_batch`: current mini-batch
-* `_model`: the model
-* `_optimizer`: the optimizer
-* `_is_validate`: `True` iff we're currently in the validation step. Useful when a function is registered for both train and validation.
-* `_loss_fn`
-* `_epoch`: current epoch
-* `_log_path`: the directory where logs are written to
-* `_is_cuda`: are we using CUDA for training?
-
-In addition to these built-ins, all keys from your configuration can be used as parameter names and the corresponding values will be injected automatically.
-
-## Configuration management
-
-Configurating your training runs is very intuitive with aurora. You have already seen one example of how to declare configurations: By specifying yaml files using `run.add_config()`. You can add as many configuration files to you run as you want. In addition, you can define or overwrite configuration values using the command line args in a fashion inspired by [sacred](https://github.com/IDSIA/sacred):
-
-```bash
-python train.py with model.pretrained=False important_classes=[0,1,2,3]
-```
-
-This will change the value of `model.pretrained` from `True` (as defined in `config.yaml`) to `False` and will define a new config called `important_classes` with the value of `[0,1,2,3]`. You could use this value as follows:
-
+## Configuration
+You can pass multiple configuration files in YAML format to your `Run`, e.g.
 ```python
-@run.train_step
-@run.validate_step
-def step(_batch, _model, _loss_fn, important_classes):
-    x, y = _batch
-    y_hat = _model(x)
-    loss = _loss_fn(y_hat, y)
-    if y_hat.argmax() in important_classes:
-        loss = 2 * loss
-    ...
+run = Run(config_files=['config/default.yaml'])
+```
+Configuration values can then be accessed via e.g. `run['model']['num_layers']`. Dotted notation is also supported, e.g. `run['model.num_layers']`.  When executing your training script, individual configuration values can be overwritten as follows:
+
+```shell script
+python train.py with model.num_layers=4 model.use_dropout=True
 ```
 
-## Available decorators
+## Run options
+...
+
+## Decorators
+Signature of all decorator functions
+
+## Logging
+explain logging behavior and additional loggers (wandb + how to write own)
+
+## Reproduceability
+
+## Learning rate schedulers

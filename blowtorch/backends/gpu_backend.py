@@ -1,7 +1,6 @@
 import torch
 from torch import cuda
 
-from aurora import _writer as writer
 from .base_backend import BaseBackend
 from .apply_func import move_data_to_device
 from ..utils import AMP_AVAILABLE
