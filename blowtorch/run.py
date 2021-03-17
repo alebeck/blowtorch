@@ -36,7 +36,6 @@ class Run:
         self._checkpoint_metric = None
         self._smaller_is_better = None  # TODO state which to minimize/checkpoint on in result dict
         self._optimize_first = None
-        self._collate_fn = None
         self._enable_amp = None
         self._is_validate = None
         self._config_files = []
@@ -73,7 +72,6 @@ class Run:
             checkpoint_metric=None,
             smaller_is_better=True,
             optimize_first=False,
-            collate_fn=None,
             enable_amp=False,
             detect_anomalies=False
             ):
@@ -88,7 +86,6 @@ class Run:
         self._checkpoint_metric = checkpoint_metric
         self._smaller_is_better = smaller_is_better
         self._optimize_first = optimize_first
-        self._collate_fn = collate_fn
         self._enable_amp = enable_amp
 
         self._save_path = Path(self._save_path)

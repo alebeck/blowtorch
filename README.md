@@ -55,13 +55,35 @@ python train.py with model.num_layers=4 model.use_dropout=True
 ```
 
 ## Run options
-...
+`Run.run()` takes following options:
+* `model`: `torch.nn.Module`
+* `train_loader`: `torch.utils.data.DataLoader`
+* `val_loader`: `torch.utils.data.DataLoader`
+* `loggers`: `Optional[List[aurora.logging.BaseLogger]]` (List of loggers that subscribe to various logging events, see logging section)
+* `max_epochs`: `int` (default `1`)
+* `use_gpu`: `bool` (default `True`)
+* `gpu_id`: `int` (default `0`)
+* `resume`: `Optional[Union[str, pathlib.Path]]` (Path to checkpoint to resume training from, default `None`)
+* `save_path`: `Union[str, pathlib.Path]` (Path to directory that blowtorch will save logs and checkpoints to, default `'train_logs'`)
+* `run_name`: `Optional[str]` (Name associated with that run, will be randomly created if None, default `None`)
+* `optimize_metric`: `Optional[str]` (train metric that will be used for optimization, will pick the first returned one if None, default `None`)
+* `checkpoint_metric`: `Optional[str]` (validation metric that will be used for checkpointing, will pick the first returned one if None, default `None`)
+* `smaller_is_better`: `bool` (default `True`)
+* `optimize_first`: `bool` (whether optimization should occur during the first epoch, default `False`)
+* `detect_anomalies`: `bool` (enable autograd anomaly detection, default `False`)
+
+## Logging
+Blowtorch will create a folder with name "<timestamp>-<name>-<sequential integer>" for each run inside the `save_path` directory. Here it will save:
+* `config.yaml` containing all configuration values
+* `log.txt` listing all metrics for each epoch
+* `model-summary.txt`: Summary of the model architecture
+* `source.txt`: Source code of the model as well as of all decorator functions
+* `checkpoints`: Directory containing checkpoints, each consisting of model & optimizer state and epoch information.
+
+Additional loggers can be added through `Run`s `loggers` parameter. Blowtorch comes with a `blowtorch.loggers.WandbLogger` and a `blowtorch.loggers.TensorBoardLogger` (WIP). Custom loggers can be created by subclassing `blowtorch.loggers.BaseLogger`.
 
 ## Decorators
 Signature of all decorator functions
-
-## Logging
-explain logging behavior and additional loggers (wandb + how to write own)
 
 ## Reproduceability
 
