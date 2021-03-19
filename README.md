@@ -80,7 +80,7 @@ Blowtorch will create a folder with name "<timestamp>-<name>-<sequential integer
 * `source.txt`: Source code of the model as well as of all decorator functions
 * `checkpoints`: Directory containing checkpoints, each consisting of model & optimizer state and epoch information.
 
-Additional loggers can be added through `Run`s `loggers` parameter. Blowtorch comes with a `blowtorch.loggers.WandbLogger` and a `blowtorch.loggers.TensorBoardLogger` (WIP). Custom loggers can be created by subclassing `blowtorch.loggers.BaseLogger`.
+Additional loggers can be added through `Run`s `loggers` parameter. Blowtorch comes with a `blowtorch.loggers.WandbLogger` and a `blowtorch.loggers.TensorBoardLogger`. Custom loggers can be created by subclassing `blowtorch.loggers.BaseLogger`.
 
 ## Decorators
 Signature of all decorator functions

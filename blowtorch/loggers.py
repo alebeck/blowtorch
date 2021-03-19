@@ -5,8 +5,10 @@ from typing import List
 
 import yaml
 from torch import nn
+from torch.utils.tensorboard import SummaryWriter
 
 from .bound_functions import BoundFunctions
+from . import _writer as writer
 
 
 # TODO implement standardlogger and always use it
@@ -93,6 +95,41 @@ class WandbLogger(BaseLogger):
     def after_pass(self, metrics: dict, epoch: int, is_validate: bool = False):
         prefix = 'val_' if is_validate else 'train_'
         self.wandb.log({(prefix + k): v for k, v in metrics.items()}, step=epoch)
+
+    def after_epoch(self, epoch: int, model: nn.Module):
+        pass
+
+
+class TensorBoardLogger(BaseLogger):
+
+    def __init__(self, log_dir=None, **kwargs):
+        """
+        Initializes a new TensorBoard logger.
+        :param log_dir: create a subfolder for each run inside this directory. Defaults to run.save_path.
+        :param **kwargs: arguments directly passed on to SummaryWriter.
+        """
+        super().__init__()
+        self.summary_writer = None
+        self.log_dir = log_dir
+        self._kwargs = kwargs
+
+    def setup(self, save_path: Path, run_name: str):
+        if self.log_dir is None:
+            # use blowtorch save_path
+            log_dir = save_path
+        else:
+            log_dir = Path(self.log_dir) / save_path.name
+
+        writer.info(f'Using {log_dir} as TensorBoard log_dir')
+        self.summary_writer = SummaryWriter(str(log_dir), **self._kwargs)
+
+    def before_training_start(self, config: dict, model: nn.Module, bound_functions: BoundFunctions):
+        pass
+
+    def after_pass(self, metrics: dict, epoch: int, is_validate: bool = False):
+        postfix = '/val' if is_validate else '/train'
+        for k, v in metrics.items():
+            self.summary_writer.add_scalar(k + postfix, v, epoch)
 
     def after_epoch(self, epoch: int, model: nn.Module):
         pass
