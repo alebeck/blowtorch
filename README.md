@@ -73,18 +73,18 @@ python train.py with model.num_layers=4 model.use_dropout=True
 * `detect_anomalies`: `bool` (enable autograd anomaly detection, default `False`)
 
 ## Logging
-Blowtorch will create a folder with name "<timestamp>-<name>-<sequential integer>" for each run inside the `save_path` directory. Here it will save:
-* `config.yaml` containing all configuration values
-* `log.txt` listing all metrics for each epoch
-* `model-summary.txt`: Summary of the model architecture
-* `source.txt`: Source code of the model as well as of all decorator functions
-* `checkpoints`: Directory containing checkpoints, each consisting of model & optimizer state and epoch information.
+Blowtorch will create a folder with name "[timestamp]-[name]-[sequential integer]" for each run inside the `run.save_path` directory. Here it will save the runs's configuration, metrics, a model summary, checkoints as well as source code. Additional loggers can be added through `Run`s `loggers` parameter:
 
-Additional loggers can be added through `Run`s `loggers` parameter. Blowtorch comes with a `blowtorch.loggers.WandbLogger` and a `blowtorch.loggers.TensorBoardLogger`. Custom loggers can be created by subclassing `blowtorch.loggers.BaseLogger`.
+* `blowtorch.loggers.WandbLogger`: Logs to Weights & Biases
+* `blowtorch.loggers.TensorBoardLogger`: Logs to TensorBoard
+
+Custom loggers can be created by subclassing `blowtorch.loggers.BaseLogger`.
 
 ## Decorators
-Signature of all decorator functions
+Blowtorch uses the decorator syntax to specify parts of the training pipeline:
 
-## Reproduceability
+* `@run.train_step`, `@run.val_step`: Specify train/val steps with one or two functions. Arguments: `batch`, `model`, `is_validate`, `device`, `epoch`
+* `@run.train_epoch`, `@run.val_epoch`: Specify whole train/val epoch, in case more flexibility for iteration/optimization is required. Arguments: `data_loader`, `model`, `is_validate`, `optimizers`
+* `@run.configure_optimizers`: Return optimizers and learning rate schedulers. Can either return a single optimizer object or a dictionary with multiple optimizers/schedulers. Arguments: `model`
 
-## Learning rate schedulers
+ TODO hooks

@@ -19,6 +19,9 @@ from .loggers import BaseLogger, LoggerSet, StandardLogger
 
 
 class Run:
+    """
+    Represents an individual training run.
+    """
 
     def __init__(self, config_files: Optional[List], random_seed: int = None):
         self._bound_functions = BoundFunctions()
@@ -75,6 +78,27 @@ class Run:
             enable_amp=False,
             detect_anomalies=False
             ):
+        """
+        Starts the training run.
+
+        Args:
+            model:
+            train_loader:
+            val_loader:
+            loggers: list of loggers that subscribe to various logging events
+            max_epochs:
+            use_gpu:
+            gpu_id:
+            resume: path to checkpoint to resume training from
+            save_path: path to directory that blowtorch will save logs and checkpoints to
+            run_name: name associated with this run, will be randomly created if None
+            optimize_metric: train metric that will be used for optimization, will pick the first returned one if None
+            checkpoint_metric: validation metric that will be used for checkpointing, will pick the first returned one if None
+            smaller_is_better: ``True`` if we want to minimize, ``False`` if maximize
+            optimize_first: whether optimization should occur during the first epoch
+            enable_amp:
+            detect_anomalies: enable autograd anomaly detection
+        """
         self._model = model
         self._max_epochs = max_epochs
         self._use_gpu = use_gpu
