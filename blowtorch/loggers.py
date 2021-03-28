@@ -5,7 +5,6 @@ from typing import List
 
 import yaml
 from torch import nn
-from torch.utils.tensorboard import SummaryWriter
 
 from .bound_functions import BoundFunctions
 from . import _writer as writer
@@ -80,21 +79,21 @@ class WandbLogger(BaseLogger):
     def __init__(self, **kwargs):
         super().__init__()
         import wandb
-        self.wandb = wandb
+        self._wandb = wandb
         self._wandb_args = kwargs
 
     def setup(self, save_path: Path, run_name: str):
         if 'name' in self._wandb_args:
             del self._wandb_args['name']
-        self.wandb.init(name=run_name, dir=save_path, **self._wandb_args)
+        self._wandb.init(name=run_name, dir=save_path, **self._wandb_args)
 
     def before_training_start(self, config: dict, model: nn.Module, bound_functions: BoundFunctions):
-        self.wandb.config.update(config)
+        self._wandb.config.update(config)
         # self.wandb.watch(model)
 
     def after_pass(self, metrics: dict, epoch: int, is_validate: bool = False):
         prefix = 'val_' if is_validate else 'train_'
-        self.wandb.log({(prefix + k): v for k, v in metrics.items()}, step=epoch)
+        self._wandb.log({(prefix + k): v for k, v in metrics.items()}, step=epoch)
 
     def after_epoch(self, epoch: int, model: nn.Module):
         pass
@@ -109,6 +108,7 @@ class TensorBoardLogger(BaseLogger):
         :param **kwargs: arguments directly passed on to SummaryWriter.
         """
         super().__init__()
+        from torch.utils.tensorboard import SummaryWriter
         self.summary_writer = None
         self.log_dir = log_dir
         self._kwargs = kwargs
@@ -121,6 +121,7 @@ class TensorBoardLogger(BaseLogger):
             log_dir = Path(self.log_dir) / save_path.name
 
         writer.info(f'Using {log_dir} as TensorBoard log_dir')
+        from torch.utils.tensorboard import SummaryWriter
         self.summary_writer = SummaryWriter(str(log_dir), **self._kwargs)
 
     def before_training_start(self, config: dict, model: nn.Module, bound_functions: BoundFunctions):
