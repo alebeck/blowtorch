@@ -1,5 +1,3 @@
-import torch
-
 from .base_backend import BaseBackend
 
 
@@ -8,6 +6,10 @@ class CPUBackend(BaseBackend):
     def setup(self, model, config_optimizers_fn):
         # setup optimizers for model parameters and return
         return config_optimizers_fn(model=model)
+    
+    @staticmethod
+    def dispatch_run(self, run_fn, args):
+        run_fn(*args)
 
     def get_name(self):
         return f'CPUBackend'

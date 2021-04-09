@@ -27,11 +27,10 @@ class Run:
         self._bound_functions = BoundFunctions()
         self._config = None
         self._backend = None
-        self._model = None
         self._logger = None
         self._max_epochs = None
         self._use_gpu = None
-        self._gpu_id = None
+        self._gpu_ids = None
         self._resume = None
         self._save_path = None
         self._run_name = None
@@ -53,21 +52,15 @@ class Run:
         if random_seed:
             seed_all(random_seed)
 
-    # TODO types, docstrings
-    # TODO pin_memory
-    # todo clear cache before start
-    # todo hooks
-    # todo cleanup code (extra files for optim, devices etc.)
-    # todo save on ctrl-C
-    # todo look at pl GPUbackend (amp optimizuation etc)
     def run(self,
             model: torch.nn.Module,
             train_loader: DataLoader,
             val_loader: DataLoader,
+            *,
             loggers: Optional[List[BaseLogger]] = None,
             max_epochs=1,
             use_gpu=True,
-            gpu_id=0,
+            gpu_ids: Union[List[int], int] = 0,
             resume: Optional[Union[str, Path]] = None,
             save_path='train_logs',
             run_name=None,
@@ -88,7 +81,7 @@ class Run:
             loggers: list of loggers that subscribe to various logging events
             max_epochs:
             use_gpu:
-            gpu_id:
+            gpu_ids:
             resume: path to checkpoint to resume training from
             save_path: path to directory that blowtorch will save logs and checkpoints to
             run_name: name associated with this run, will be randomly created if None
@@ -99,10 +92,9 @@ class Run:
             enable_amp:
             detect_anomalies: enable autograd anomaly detection
         """
-        self._model = model
         self._max_epochs = max_epochs
         self._use_gpu = use_gpu
-        self._gpu_id = gpu_id
+        self._gpu_ids = gpu_ids
         self._resume = resume
         self._run_name = run_name
         self._save_path = save_path
@@ -143,7 +135,9 @@ class Run:
         # Backend initialization
         try:
             if self._use_gpu:
-                self._backend = GPUBackend(self._gpu_id, self._enable_amp)
+                if isinstance(self._gpu_ids, int):
+                    self._gpu_ids = [self._gpu_ids]
+                self._backend = GPUBackend(self._gpu_ids, self._enable_amp)
             else:
                 self._backend = CPUBackend()
         except Exception as e:
@@ -156,14 +150,26 @@ class Run:
             self._resume = Path(self._resume)
             with writer.task('Loading checkpoint'):
                 if self._resume.is_dir():
-                    filename = sorted(list(self._resume.iterdir()))[-1]
-                    checkpoint = torch.load(self._resume / filename)
+                    checkpoint_dir = self._resume / 'checkpoints'
+                    if not checkpoint_dir.exists():
+                        raise FileNotFoundError(
+                            f'No "checkpoints" directory found in resume directory {self._resume}')
+                    checkpoint_files = list(checkpoint_dir.glob('*.pt'))
+                    if not checkpoint_files:
+                        raise FileNotFoundError(f'No checkpoint file found in directory {checkpoint_dir}')
+                    # sort w.r.t. epoch
+                    checkpoint_files = sorted(checkpoint_files, key=lambda f: int(f.stem.split('_')[-1]))
+                    checkpoint = torch.load(checkpoint_files[-1])
                 else:
                     checkpoint = torch.load(self._resume)
-                self._model.load_state_dict(checkpoint['model'])
+
+                model.load_state_dict(checkpoint['model'])
                 start_epoch = checkpoint['epoch']
 
-        self._backend.setup(self._model, self._bound_functions['configure_optimizers'])
+        self._backend.dispatch(self._train_fn, ...)
+
+    def _train_fn(self, model, ..., is_primary_process):
+        self._backend.setup(model, self._bound_functions['configure_optimizers'])
         writer.info(f'Using {self._backend.get_name()}')
 
         if not self._optimize_first:
@@ -172,9 +178,9 @@ class Run:
         if self._resume:
             writer.info(f'Resuming training from checkpoint {self._resume}')
             # resume optimizer state
-            self._set_optim_states(checkpoint['optimizers'])
+            self._backend.set_optim_states(checkpoint['optimizers'])
 
-        self._logger.before_training_start(self._config.get_raw_config(), self._model, self._bound_functions)
+        self._logger.before_training_start(self._config.get_raw_config(), model, self._bound_functions)
 
         best_val = float('inf') if self._smaller_is_better else 0.
         best_epoch = None
@@ -183,7 +189,7 @@ class Run:
             metrics = {}  # stores metrics of current epoch
 
             # train
-            self._model.train()
+            model.train()
 
             with writer.task(f'Training epoch {epoch}') as t:
                 if mode == 'step':
@@ -195,7 +201,7 @@ class Run:
                             train_metrics = self._backend.train_step(
                                 self._bound_functions['train_step'],
                                 batch=batch,
-                                model=self._model,
+                                model=model,
                                 is_validate=False,
                                 device=self._backend.device,
                                 epoch=epoch
@@ -216,7 +222,7 @@ class Run:
 
                         if 'after_train_step' in self._bound_functions:
                             self._bound_functions['after_train_step'](
-                                model=self._model,
+                                model=model,
                                 is_validate=False,
                                 device=self._backend.device,
                                 epoch=epoch
@@ -241,7 +247,7 @@ class Run:
                 t.success(status_str)
 
             # val
-            self._model.eval()
+            model.eval()
 
             with writer.task(f'Validating epoch {epoch}') as t:
                 if mode == 'step':
@@ -252,7 +258,7 @@ class Run:
                         val_metrics = self._backend.val_step(
                             self._bound_functions['val_step'],
                             batch=batch,
-                            model=self._model,
+                            model=model,
                             is_validate=True,
                             device=self._backend.device,
                             epoch=epoch
@@ -296,7 +302,7 @@ class Run:
 
                 with writer.task(f'Saving checkpoint at epoch {epoch}'):
                     checkpoint = {
-                        'model': self._model.state_dict(),
+                        'model': model.state_dict(),
                         'optimizers': {name: optim.state_dict() for name, optim in self._backend.optimizers.items()},
                         'epoch': epoch + 1
                     }
@@ -308,8 +314,6 @@ class Run:
 
                 best_val = metrics['val'][self._checkpoint_metric]
                 best_epoch = epoch
-
-        writer.success(f'Training finished')
 
     def add_config(self, path):
         self._config_files.append(path)
@@ -359,7 +363,3 @@ class Run:
     def configure_optimizers(self, f):
         self._bound_functions['configure_optimizers'] = f
         return make_wrapper(f)
-
-    def _set_optim_states(self, state_dicts):
-        for name, state in state_dicts:
-            self._backend.optimizers[name].load_state_dict(state)
