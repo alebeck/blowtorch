@@ -190,6 +190,7 @@ class Run:
 
             # train
             model.train()
+            torch.set_grad_enabled(True)
 
             with writer.task(f'Training epoch {epoch}') as t:
                 if mode == 'step':
@@ -248,6 +249,7 @@ class Run:
 
             # val
             model.eval()
+            torch.set_grad_enabled(False)
 
             with writer.task(f'Validating epoch {epoch}') as t:
                 if mode == 'step':
