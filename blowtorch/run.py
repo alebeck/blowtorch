@@ -23,7 +23,7 @@ class Run:
     Represents an individual training run.
     """
 
-    def __init__(self, config_files: Optional[List], random_seed: int = None, deterministic: bool = True):
+    def __init__(self, config_files: Optional[List], random_seed: int = None):
         self._bound_functions = BoundFunctions()
         self._config = None
         self._backend = None
@@ -43,8 +43,6 @@ class Run:
         self._is_validate = None
         self._config_files = []
 
-        self.deterministic = deterministic
-
         # TODO support run() args in config
         if config_files is None:
             config_files = []
@@ -54,8 +52,6 @@ class Run:
 
         if random_seed:
             seed_all(random_seed)
-
-        set_deterministic(deterministic)
 
     # TODO types, docstrings
     # TODO pin_memory
@@ -327,6 +323,10 @@ class Run:
     @staticmethod
     def seed_all(seed):
         seed_all(seed)
+
+    @staticmethod
+    def set_deterministic(deterministic):
+        set_deterministic(deterministic)
 
     @functools.wraps(run)
     def __call__(self, *args, **kwargs):
