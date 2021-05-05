@@ -12,7 +12,7 @@ from coolname import generate_slug, replace_random
 from . import _writer as writer
 from .backends.cpu_backend import CPUBackend
 from .backends.gpu_backend import GPUBackend
-from .utils import make_wrapper, get_highest_run, std_round, seed_all
+from .utils import make_wrapper, get_highest_run, std_round, seed_all, set_deterministic
 from .config import TrainingConfig
 from .bound_functions import BoundFunctions
 from .loggers import BaseLogger, LoggerSet, StandardLogger
@@ -23,7 +23,7 @@ class Run:
     Represents an individual training run.
     """
 
-    def __init__(self, config_files: Optional[List], random_seed: int = None):
+    def __init__(self, config_files: Optional[List], random_seed: int = None, deterministic: bool = True):
         self._bound_functions = BoundFunctions()
         self._config = None
         self._backend = None
@@ -43,6 +43,8 @@ class Run:
         self._is_validate = None
         self._config_files = []
 
+        self.deterministic = deterministic
+
         # TODO support run() args in config
         if config_files is None:
             config_files = []
@@ -52,6 +54,8 @@ class Run:
 
         if random_seed:
             seed_all(random_seed)
+
+        set_deterministic(deterministic)
 
     # TODO types, docstrings
     # TODO pin_memory

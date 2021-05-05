@@ -200,9 +200,9 @@ def seed_all(seed):
 	random.seed(seed)
 	np.random.seed(seed)
 	torch.manual_seed(seed)
-	torch.set_deterministic(True)
-	try:
-		torch.backends.cudnn.benchmark = False
-		torch.backends.cudnn.deterministic = True
-	except:
-		pass
+
+
+def set_deterministic(deterministic: bool):
+	if torch.cuda.is_available():
+		torch.backends.cudnn.benchmark = not deterministic
+		torch.backends.cudnn.deterministic = deterministic
