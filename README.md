@@ -1,8 +1,8 @@
 # blowtorch
 
-Intuitive, high-level training framework for research and development. It abstracts away boilerplate normally associated with training and evaluating PyTorch models, without limiting your flexibility. Blowtorch provides the following:
+Intuitive, high-level training framework for research and development. It abstracts away boilerplate code normally associated with training and evaluating PyTorch models, without limiting flexibility. Blowtorch provides:
 
-* A way to specify training runs at a high level, while not giving up on fine-grained control over individual training parts
+* A way to specify training runs at high level, while not giving up on fine-grained control
 * Automated checkpointing, logging and resuming of runs
 * A [sacred](https://github.com/IDSIA/sacred) inspired configuration management
 * Reproducibility by keeping track of configuration, code and random state of each run
@@ -42,6 +42,8 @@ val_loader = DataLoader(ImageNet('.', split='val'), batch_size=4)
 
 run(vgg16(), train_loader, val_loader)
 ```
+
+Note that in the above example, blowtorch automatically takes care of moving the model and tensors to the appropriate devices. It automatically sets the model to train/eval mode and activates/deactivates gradient calculation, respectively.
 
 ## Configuration
 You can pass multiple configuration files in YAML format to your `Run`, e.g.
