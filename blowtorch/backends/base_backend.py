@@ -36,7 +36,10 @@ class BaseBackend:
         pass
 
     @abstractmethod
-    def scheduler_step(self, val_loss):
+    def scheduler_step(self, metrics):
+        """
+        Executes one scheduler step, calling step() on all optimizers (passing metrics in case of plateau scheduler).
+        """
         pass
 
     @abstractmethod

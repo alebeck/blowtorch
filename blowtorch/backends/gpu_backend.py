@@ -58,9 +58,12 @@ class GPUBackend(BaseBackend):
             tensor.backward()
             optimizer.step()
 
-    def scheduler_step(self, val_loss):
+    def scheduler_step(self, metrics):
         for scheduler in self.schedulers.values():
-            scheduler.step(val_loss)
+            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                scheduler.step(metrics)
+            else:
+                scheduler.step()
 
     def to_device(self, data):
         return move_data_to_device(data, torch.device(self.gpu_id))

@@ -21,5 +21,12 @@ class CPUBackend(BaseBackend):
     def optim_step(self, tensor):
         raise NotImplementedError()
 
+    def scheduler_step(self, metrics):
+        for scheduler in self.schedulers.values():
+            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                scheduler.step(metrics)
+            else:
+                scheduler.step()
+
     def to_device(self, data):
         return data
