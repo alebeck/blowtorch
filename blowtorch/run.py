@@ -1,3 +1,4 @@
+import warnings
 from datetime import datetime
 from typing import Optional, List, Union
 from pathlib import Path
@@ -280,7 +281,16 @@ class Run:
                     raise NotImplementedError()
 
                 # TODO specify metric to do scheduling on
-                self._backend.scheduler_step(metrics['val'][self._optimize_metric])
+                # if self._optimize_first is False, a warning will be raised by the schedulers which suggests that
+                # optim.step() is called after scheduler.step(), which would normally result in the first epoch being
+                # skipped from the learning rate scheduler. In our case, however, optim.step() was not called because
+                # of self._optimize_first is False, and the epoch counter should indeed be increased.
+                if epoch == 0 and not self._optimize_first:
+                    warnings.simplefilter(action='ignore', category=UserWarning)
+                    self._backend.scheduler_step(metrics['val'][self._optimize_metric])
+                    warnings.filterwarnings('default')
+                else:
+                    self._backend.scheduler_step(metrics['val'][self._optimize_metric])
 
                 self._logger.after_pass(metrics['val'], epoch, is_validate=True)
 
