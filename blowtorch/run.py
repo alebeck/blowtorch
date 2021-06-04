@@ -192,6 +192,9 @@ class Run:
                         batch = self._backend.to_device(batch)
 
                         with torch.autograd.set_detect_anomaly(detect_anomalies):
+                            # don't calculate grads if we're in epoch zero and not optimizing
+                            torch.set_grad_enabled(self._optimize_first or epoch > 0)
+
                             train_metrics = self._backend.train_step(
                                 self._bound_functions['train_step'],
                                 batch=batch,
