@@ -33,7 +33,7 @@ class Run:
         self._max_epochs = None
         self._use_gpu = None
         self._gpu_id = None
-        self._resume = None
+        self._resume_checkpoint = None
         self._save_path = None
         self._run_name = None
         self._optimize_metric = None
@@ -69,7 +69,7 @@ class Run:
             max_epochs=1,
             use_gpu=True,
             gpu_id=0,
-            resume: Optional[Union[str, Path]] = None,
+            resume_checkpoint: Optional[Union[str, Path]] = None,
             save_path='train_logs',
             run_name=None,
             optimize_metric=None,
@@ -90,7 +90,7 @@ class Run:
             max_epochs:
             use_gpu:
             gpu_id:
-            resume: path to checkpoint to resume training from
+            resume_checkpoint: path to checkpoint to resume training from
             save_path: path to directory that blowtorch will save logs and checkpoints to
             run_name: name associated with this run, will be randomly created if None
             optimize_metric: train metric that will be used for optimization, will pick the first returned one if None
@@ -104,7 +104,7 @@ class Run:
         self._max_epochs = max_epochs
         self._use_gpu = use_gpu
         self._gpu_id = gpu_id
-        self._resume = resume
+        self._resume_checkpoint = resume_checkpoint
         self._run_name = run_name
         self._save_path = save_path
         self._optimize_metric = optimize_metric
@@ -119,18 +119,31 @@ class Run:
         # assign new random.Random() instance to coolname, such that slugs are different even though we have seeded
         replace_random(random.Random())
 
-        if self._run_name is None:
-            self._run_name = generate_slug(2)
-        self._run_name += f'-{get_highest_run(self._save_path) + 1}'
-        self._save_path = self._save_path / (datetime.now().strftime("%y-%m-%d_%H-%M-%S") + '_' + self._run_name)
-        self._save_path.mkdir(parents=True, exist_ok=False)
+        if self._resume_checkpoint:
+            if self._run_name is not None:
+                raise ValueError('A run name cannot be specified when resuming from a previous run.')
+            self._resume_checkpoint = Path(self._resume_checkpoint)
+            if not self._resume_checkpoint.is_dir() or not (self._resume_checkpoint / 'checkpoints').exists():
+                raise ValueError('Path to resume from should be the parent directory of the "checkpoints" folder.')
+            self._run_name = self._resume_checkpoint.stem.split('_')[-1]
+            self._save_path = self._resume_checkpoint
+        else:
+            if self._run_name is None:
+                self._run_name = generate_slug(2)
+                assert '_' not in self._run_name
+            elif '_' in self._run_name:
+                raise ValueError('Run name cannot contain "_".')
+            # append consecutive number to run name
+            self._run_name += f'-{get_highest_run(self._save_path) + 1}'
+            self._save_path = self._save_path / (datetime.now().strftime("%y-%m-%d_%H-%M-%S") + '_' + self._run_name)
+            self._save_path.mkdir(parents=True, exist_ok=False)
 
         if loggers is None:
             loggers = []
         if not isinstance(loggers, (list, tuple)):
             loggers = [loggers]
         self._logger = LoggerSet([StandardLogger()] + loggers)
-        self._logger.setup(self._save_path, self._run_name)
+        self._logger.setup(self._save_path, self._run_name, self._resume_checkpoint is not None)
 
         if 'train_step' in self._bound_functions and 'val_step' in self._bound_functions:
             mode = 'step'
@@ -153,14 +166,10 @@ class Run:
 
         # load checkpoint
         start_epoch = 0
-        if self._resume:
-            self._resume = Path(self._resume)
+        if self._resume_checkpoint:
             with writer.task('Loading checkpoint'):
-                if self._resume.is_dir():
-                    filename = sorted(list(self._resume.iterdir()))[-1]
-                    checkpoint = torch.load(self._resume / filename)
-                else:
-                    checkpoint = torch.load(self._resume)
+                filename = sorted(list((self._resume_checkpoint / 'checkpoints').iterdir()))[-1]
+                checkpoint = torch.load(filename)
                 self._model.load_state_dict(checkpoint['model'])
                 start_epoch = checkpoint['epoch']
 
@@ -170,8 +179,8 @@ class Run:
         if not self._optimize_first:
             writer.info('Not optimizing during first epoch')
 
-        if self._resume:
-            writer.info(f'Resuming training from checkpoint {self._resume}')
+        if self._resume_checkpoint:
+            writer.info(f'Resuming training from checkpoint {self._resume_checkpoint}')
             # resume optimizer state
             self._set_optim_states(checkpoint['optimizers'])
 
@@ -378,5 +387,5 @@ class Run:
         return make_wrapper(f)
 
     def _set_optim_states(self, state_dicts):
-        for name, state in state_dicts:
+        for name, state in state_dicts.items():
             self._backend.optimizers[name].load_state_dict(state)

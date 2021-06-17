@@ -19,7 +19,7 @@ class BaseLogger(ABC):
         pass
 
     @abstractmethod
-    def setup(self, save_path: Path, run_name: str):
+    def setup(self, save_path: Path, run_name: str, resume: bool):
         """
         Used to setup the logger, given the run name
         """
@@ -44,12 +44,17 @@ class StandardLogger(BaseLogger):
         super().__init__()
         self._save_path = None
         self._log_file = None
+        self._resume = None
 
-    def setup(self, save_path: Path, run_name: str):
+    def setup(self, save_path: Path, run_name: str, resume: bool):
         self._save_path = save_path
         self._log_file = self._save_path / 'log.txt'
+        self._resume = resume
 
     def before_training_start(self, config: dict, model: nn.Module, bound_functions: BoundFunctions):
+        if self._resume:
+            return
+
         # save config to file
         with (self._save_path / 'config.yaml').open('w') as fh:
             yaml.dump(config, fh)
@@ -81,15 +86,20 @@ class WandbLogger(BaseLogger):
         import wandb
         self._wandb = wandb
         self._wandb_args = kwargs
+        self._resume = None
 
-    def setup(self, save_path: Path, run_name: str):
+    def setup(self, save_path: Path, run_name: str, resume: bool):
         if 'name' in self._wandb_args:
             del self._wandb_args['name']
-        self._wandb.init(name=run_name, dir=save_path, **self._wandb_args)
+        self._resume = resume
+        # always set resume=True, since every run is saved in its own directory anyway and wandb will just create a new
+        # run if no previous run exists in the save_path directory. This way wandb automatically saves the run id in
+        # the save_path directory and automatically resumes later, if desired.
+        self._wandb.init(name=run_name, dir=save_path, resume=True, **self._wandb_args)
 
     def before_training_start(self, config: dict, model: nn.Module, bound_functions: BoundFunctions):
-        self._wandb.config.update(config)
-        # self.wandb.watch(model)
+        if not self._resume:
+            self._wandb.config.update(config)
 
     def after_pass(self, metrics: dict, epoch: int, is_validate: bool = False):
         prefix = 'val_' if is_validate else 'train_'
@@ -142,9 +152,9 @@ class LoggerSet(BaseLogger):
         super().__init__()
         self._loggers = loggers
 
-    def setup(self, save_path: Path, run_name: str):
+    def setup(self, save_path: Path, run_name: str, resume: bool):
         for logger in self._loggers:
-            logger.setup(save_path, run_name)
+            logger.setup(save_path, run_name, resume)
 
     def before_training_start(self, config: dict, model: nn.Module, bound_functions: BoundFunctions):
         for logger in self._loggers:

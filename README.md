@@ -63,7 +63,7 @@ python train.py with model.num_layers=4 model.use_dropout=True
 * `max_epochs`: `int` (default `1`)
 * `use_gpu`: `bool` (default `True`)
 * `gpu_id`: `int` (default `0`)
-* `resume`: `Optional[Union[str, pathlib.Path]]` (Path to checkpoint to resume training from, default `None`)
+* `resume_checkpoint`: `Optional[Union[str, pathlib.Path]]` (Path to checkpoint directory to resume training from, default `None`)
 * `save_path`: `Union[str, pathlib.Path]` (Path to directory that blowtorch will save logs and checkpoints to, default `'train_logs'`)
 * `run_name`: `Optional[str]` (Name associated with that run, will be randomly created if None, default `None`)
 * `optimize_metric`: `Optional[str]` (train metric that will be used for optimization, will pick the first returned one if None, default `None`)
