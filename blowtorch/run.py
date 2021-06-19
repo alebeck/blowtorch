@@ -38,6 +38,7 @@ class Run:
         self._run_name = None
         self._optimize_metric = None
         self._checkpoint_metric = None
+        self._checkpoint_every = None
         self._smaller_is_better = None  # TODO state which to minimize/checkpoint on in result dict
         self._optimize_first = None
         self._enable_amp = None
@@ -74,6 +75,7 @@ class Run:
             run_name=None,
             optimize_metric=None,
             checkpoint_metric=None,
+            checkpoint_every=1,
             smaller_is_better=True,
             optimize_first=False,
             enable_amp=False,
@@ -95,6 +97,8 @@ class Run:
             run_name: name associated with this run, will be randomly created if None
             optimize_metric: train metric that will be used for optimization, will pick the first returned one if None
             checkpoint_metric: validation metric that will be used for checkpointing, will pick the first returned one if None
+            checkpoint_every: every checkpoint_every epochs a checkpoint is saved, disregarding performance of the
+            current model. This way it's always possible to resume the run from the latest (or near-latest) state
             smaller_is_better: ``True`` if we want to minimize, ``False`` if maximize
             optimize_first: whether optimization should occur during the first epoch
             enable_amp:
@@ -109,12 +113,15 @@ class Run:
         self._save_path = save_path
         self._optimize_metric = optimize_metric
         self._checkpoint_metric = checkpoint_metric
+        self._checkpoint_every = checkpoint_every
         self._smaller_is_better = smaller_is_better
         self._optimize_first = optimize_first
         self._enable_amp = enable_amp
 
         self._save_path = Path(self._save_path)
         self._save_path.mkdir(parents=True, exist_ok=True)
+        checkpoints_path = self._save_path / 'checkpoints'
+        checkpoints_path.mkdir(exist_ok=True)
 
         # assign new random.Random() instance to coolname, such that slugs are different even though we have seeded
         replace_random(random.Random())
@@ -187,7 +194,6 @@ class Run:
         self._logger.before_training_start(self._config.get_raw_config(), self._model, self._bound_functions)
 
         best_val = float('inf') if self._smaller_is_better else 0.
-        best_epoch = None
 
         for epoch in range(start_epoch, start_epoch + self._max_epochs):
             metrics = {}  # stores metrics of current epoch
@@ -312,24 +318,30 @@ class Run:
                 writer.info(f'Selected metric "{metric}" for checkpointing')
                 self._checkpoint_metric = metric
 
-            # save checkpoint
-            if (self._smaller_is_better and metrics['val'][self._checkpoint_metric] < best_val) or \
-                    (not self._smaller_is_better and metrics['val'][self._checkpoint_metric] > best_val):
+            is_best = (self._smaller_is_better and metrics['val'][self._checkpoint_metric] < best_val) or \
+                      (not self._smaller_is_better and metrics['val'][self._checkpoint_metric] > best_val)
+            is_latest = epoch % self._checkpoint_every == 0
 
-                with writer.task(f'Saving checkpoint at epoch {epoch}'):
+            if is_best or is_latest:
+                with writer.task(f'Saving checkpoint'):
                     checkpoint = {
                         'model': self._model.state_dict(),
                         'optimizers': {name: optim.state_dict() for name, optim in self._backend.optimizers.items()},
                         'epoch': epoch + 1
                     }
-                    checkpoint_path = self._save_path / 'checkpoints' / f'epoch_{epoch}.pt'
-                    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-                    torch.save(checkpoint, checkpoint_path)
-                    # delete old checkpoint
-                    (self._save_path / 'checkpoints' / f'epoch_{best_epoch}.pt').unlink(missing_ok=True)
+                    path = checkpoints_path / f'epoch_{epoch}.pt'
+                    torch.save(checkpoint, path)
+
+                    if is_best:
+                        # delete old best checkpoint and symlink new one
+                        (checkpoints_path / 'best').resolve(strict=True).unlink()
+                        (checkpoints_path / 'best').symlink_to(path)
+                    if is_latest:
+                        # missing is ok because 'best' and 'latest' might have been referencing the same file
+                        (checkpoints_path / 'latest').resolve(strict=True).unlink(missing_ok=True)
+                        (checkpoints_path / 'latest').symlink_to(path)
 
                 best_val = metrics['val'][self._checkpoint_metric]
-                best_epoch = epoch
 
         writer.success(f'Training finished')
 
