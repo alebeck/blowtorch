@@ -120,8 +120,6 @@ class Run:
 
         self._save_path = Path(self._save_path)
         self._save_path.mkdir(parents=True, exist_ok=True)
-        checkpoints_path = self._save_path / 'checkpoints'
-        checkpoints_path.mkdir(exist_ok=True)
 
         # assign new random.Random() instance to coolname, such that slugs are different even though we have seeded
         replace_random(random.Random())
@@ -144,6 +142,9 @@ class Run:
             self._run_name += f'-{get_highest_run(self._save_path) + 1}'
             self._save_path = self._save_path / (datetime.now().strftime("%y-%m-%d_%H-%M-%S") + '_' + self._run_name)
             self._save_path.mkdir(parents=True, exist_ok=False)
+
+        checkpoints_path = self._save_path / 'checkpoints'
+        checkpoints_path.mkdir(exist_ok=True)
 
         if loggers is None:
             loggers = []
@@ -171,25 +172,20 @@ class Run:
             writer.error(str(e))
             raise
 
-        # load checkpoint
+        # load checkpoint if requested
+        checkpoint = None
         start_epoch = 0
         if self._resume_checkpoint:
-            with writer.task('Loading checkpoint'):
-                filename = sorted(list((self._resume_checkpoint / 'checkpoints').iterdir()))[-1]
-                checkpoint = torch.load(filename)
-                self._model.load_state_dict(checkpoint['model'])
-                start_epoch = checkpoint['epoch']
+            writer.info(f'Resuming training from checkpoint {self._resume_checkpoint}')
+            checkpoint = torch.load(checkpoints_path / 'latest', map_location='cpu')
+            start_epoch = checkpoint['next_epoch']
 
-        self._backend.setup(self._model, self._bound_functions['configure_optimizers'])
+        # backend takes care of initializing model, optimizers and schedulers
+        self._backend.setup(self._model, self._bound_functions['configure_optimizers'], checkpoint)
         writer.info(f'Using {self._backend.get_name()}')
 
-        if not self._optimize_first:
+        if not self._optimize_first and start_epoch == 0:
             writer.info('Not optimizing during first epoch')
-
-        if self._resume_checkpoint:
-            writer.info(f'Resuming training from checkpoint {self._resume_checkpoint}')
-            # resume optimizer state
-            self._set_optim_states(checkpoint['optimizers'])
 
         self._logger.before_training_start(self._config.get_raw_config(), self._model, self._bound_functions)
 
@@ -320,26 +316,38 @@ class Run:
 
             is_best = (self._smaller_is_better and metrics['val'][self._checkpoint_metric] < best_val) or \
                       (not self._smaller_is_better and metrics['val'][self._checkpoint_metric] > best_val)
-            is_latest = epoch % self._checkpoint_every == 0
 
-            if is_best or is_latest:
+            if is_best or epoch % self._checkpoint_every == 0:
                 with writer.task(f'Saving checkpoint'):
                     checkpoint = {
                         'model': self._model.state_dict(),
                         'optimizers': {name: optim.state_dict() for name, optim in self._backend.optimizers.items()},
-                        'epoch': epoch + 1
+                        'schedulers': {name: sched.state_dict() for name, sched in self._backend.schedulers.items()},
+                        'next_epoch': epoch + 1
                     }
                     path = checkpoints_path / f'epoch_{epoch}.pt'
                     torch.save(checkpoint, path)
 
+                    latest_path = (checkpoints_path / 'latest')
+                    best_path = (checkpoints_path / 'best')
+
+                    if latest_path.is_symlink():
+                        # delete previous latest checkpoint
+                        checkpoint_file = latest_path.resolve()
+                        latest_path.unlink()
+                        if not (best_path.is_symlink() and best_path.resolve() == checkpoint_file):
+                            # best_path symlink does not link to this checkpoint, so we can delete it
+                            checkpoint_file.unlink()
+                    # create new latest symlink
+                    latest_path.symlink_to(path.name)
+
                     if is_best:
                         # delete old best checkpoint and symlink new one
-                        (checkpoints_path / 'best').resolve(strict=True).unlink()
-                        (checkpoints_path / 'best').symlink_to(path)
-                    if is_latest:
-                        # missing is ok because 'best' and 'latest' might have been referencing the same file
-                        (checkpoints_path / 'latest').resolve(strict=True).unlink(missing_ok=True)
-                        (checkpoints_path / 'latest').symlink_to(path)
+                        if best_path.is_symlink():
+                            checkpoint_file = best_path.resolve()
+                            best_path.unlink()
+                            checkpoint_file.unlink()
+                        best_path.symlink_to(path.name)
 
                 best_val = metrics['val'][self._checkpoint_metric]
 
@@ -397,7 +405,3 @@ class Run:
     def configure_optimizers(self, f):
         self._bound_functions['configure_optimizers'] = f
         return make_wrapper(f)
-
-    def _set_optim_states(self, state_dicts):
-        for name, state in state_dicts.items():
-            self._backend.optimizers[name].load_state_dict(state)

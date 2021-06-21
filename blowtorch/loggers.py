@@ -118,6 +118,7 @@ class TensorBoardLogger(BaseLogger):
         :param **kwargs: arguments directly passed on to SummaryWriter.
         """
         super().__init__()
+        # do this to fail early in case tensorboard is not installed
         from torch.utils.tensorboard import SummaryWriter
         self.summary_writer = None
         self.log_dir = log_dir

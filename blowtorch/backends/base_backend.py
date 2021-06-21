@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 class BaseBackend:
 
     @abstractmethod
-    def setup(self, model, config_optimizers_fn):
+    def setup(self, model, config_optimizers_fn, checkpoint):
         """
         Initializes backend, moves model to device and also initializes optimizers.
         """

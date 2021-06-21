@@ -22,9 +22,14 @@ class GPUBackend(BaseBackend):
         if enable_amp and not AMP_AVAILABLE:
             raise ValueError('AMP is not supported by your PyTorch version, try torch>=1.6.')
 
-    def setup(self, model, config_optimizers_fn):
+    def setup(self, model, config_optimizers_fn, checkpoint=None):
+        self.model = model
+
+        if checkpoint:
+            self.model.load_state_dict(checkpoint['model'])
+
         # move model parameters to specified GPU
-        self.model = model.cuda(device=self.gpu_id)
+        self.model.cuda(device=self.gpu_id)
 
         # setup AMP
         # writer.info('Using AMP with 16 bit precision')
@@ -38,6 +43,13 @@ class GPUBackend(BaseBackend):
             self.optimizers = {'main': self.optimizers}
         if not isinstance(self.schedulers, dict):
             self.schedulers = {'main': self.schedulers}
+
+        if checkpoint:
+            # restore optimizer/scheduler states
+            for name, state in checkpoint['optimizers'].items():
+                self.optimizers[name].load_state_dict(state)
+            for name, state in checkpoint['schedulers'].items():
+                self.schedulers[name].load_state_dict(state)
 
     def get_name(self):
         return f'GPUBackend[device={self.gpu_id}, AMP={self.enable_amp}]'
