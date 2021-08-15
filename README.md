@@ -1,6 +1,6 @@
 # blowtorch
 
-Intuitive, high-level training framework for research and development. It abstracts away boilerplate normally associated with training and evaluating PyTorch models, without limiting your flexibility. Blowtorch provides the following:
+Intuitive, high-level training framework for research and development. Abstracts away boilerplate normally associated with training and evaluating PyTorch models, without limiting flexibility. Blowtorch provides the following:
 
 * A way to specify training runs at a high level, while not giving up on fine-grained control over individual training parts
 * Automated checkpointing, logging and resuming of runs
@@ -40,7 +40,6 @@ def configure_optimizers(model):
 
 train_loader = DataLoader(CIFAR10('.', train=True, download=True, transform=ToTensor()))
 val_loader = DataLoader(CIFAR10('.', train=False, download=True, transform=ToTensor()))
-
 
 run(vgg16(num_classes=10), train_loader, val_loader)
 ```
@@ -88,5 +87,3 @@ Blowtorch uses the decorator syntax to specify parts of the training pipeline:
 * `@run.train_step`, `@run.val_step`: Specify train/val steps with one or two functions. Arguments: `batch`, `model`, `is_validate`, `device`, `epoch`
 * `@run.train_epoch`, `@run.val_epoch`: Specify whole train/val epoch, in case more flexibility for iteration/optimization is required. Arguments: `data_loader`, `model`, `is_validate`, `optimizers`
 * `@run.configure_optimizers`: Return optimizers and learning rate schedulers. Can either return a single optimizer object or a dictionary with multiple optimizers/schedulers. Arguments: `model`
-
- TODO hooks
