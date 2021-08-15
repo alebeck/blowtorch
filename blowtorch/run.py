@@ -24,7 +24,7 @@ class Run:
     Represents an individual training run.
     """
 
-    def __init__(self, config_files: Optional[List], random_seed: int = None):
+    def __init__(self, config_files: Optional[List] = None, random_seed: int = None):
         self._bound_functions = BoundFunctions()
         self._config = None
         self._backend = None
@@ -43,14 +43,8 @@ class Run:
         self._optimize_first = None
         self._enable_amp = None
         self._is_validate = None
-        self._config_files = []
 
-        # TODO support run() args in config
-        if config_files is None:
-            config_files = []
-        for file in config_files:
-            self.add_config(file)
-        self._config = TrainingConfig(self._config_files)
+        self._config = TrainingConfig([] if config_files is None else config_files)
 
         if random_seed:
             seed_all(random_seed)
@@ -352,9 +346,6 @@ class Run:
                 best_val = metrics['val'][self._checkpoint_metric]
 
         writer.success(f'Training finished')
-
-    def add_config(self, path):
-        self._config_files.append(path)
 
     def get_raw_config(self):
         return self._config.get_raw_config()
