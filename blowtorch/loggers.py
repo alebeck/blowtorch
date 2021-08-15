@@ -3,14 +3,13 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import List
 
-import yaml
+from ruamel.yaml import YAML
 from torch import nn
 
 from .bound_functions import BoundFunctions
 from . import _writer as writer
 
-
-# TODO implement standardlogger and always use it
+yaml = YAML(typ='safe')
 
 
 class BaseLogger(ABC):

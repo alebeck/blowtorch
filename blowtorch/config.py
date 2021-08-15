@@ -2,10 +2,12 @@ import ast
 import copy
 import sys
 
-import yaml
+from ruamel.yaml import YAML
 
 from . import _writer
 from .utils import deep_merge, get_by_path, set_by_path
+
+yaml = YAML(typ='safe')
 
 
 class TrainingConfig:
@@ -25,7 +27,7 @@ class TrainingConfig:
 
     def _add_config(self, path):
         with open(path) as fh:
-            yaml_dict = yaml.load(fh.read(), Loader=yaml.FullLoader)
+            yaml_dict = yaml.load(fh.read())
         self._config = deep_merge(self._config, yaml_dict)
 
     def _parse_cmd_args(self):
