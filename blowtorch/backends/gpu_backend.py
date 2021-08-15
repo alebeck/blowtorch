@@ -37,8 +37,12 @@ class GPUBackend(BaseBackend):
 
         # setup optimizers for model parameters
         optimizer_config = config_optimizers_fn(model=self.model)
-        self.optimizers = optimizer_config['optimizers']
-        self.schedulers = optimizer_config['schedulers']
+
+        if isinstance(optimizer_config, tuple):
+            self.optimizers, self.schedulers = optimizer_config
+        else:
+            self.optimizers, self.schedulers = optimizer_config, {}
+
         if not isinstance(self.optimizers, dict):
             self.optimizers = {'main': self.optimizers}
         if not isinstance(self.schedulers, dict):

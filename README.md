@@ -14,12 +14,13 @@ Make sure you have `numpy` and `torch` installed, then install with pip:
 pip install --upgrade blowtorch
 ```
 
-## Minimal working example
+## Example
 ```python
 from torch.optim import Adam
 from torch.utils.data import DataLoader
+from torchvision.datasets import CIFAR10
+from torchvision.transforms import ToTensor
 from torchvision.models import vgg16
-from torchvision.datasets import ImageNet
 from blowtorch import Run
 
 run = Run(random_seed=123)
@@ -29,7 +30,7 @@ run = Run(random_seed=123)
 def step(batch, model):
     x, y = batch
     y_hat = model(x)
-    loss = (y - y_hat) ** 2
+    loss = (y - y_hat).square().mean()
     return loss
 
 # will be called when model has been moved to the desired device 
@@ -37,10 +38,11 @@ def step(batch, model):
 def configure_optimizers(model):
     return Adam(model.parameters())
 
-train_loader = DataLoader(ImageNet('.', split='train'), batch_size=4)
-val_loader = DataLoader(ImageNet('.', split='val'), batch_size=4)
+train_loader = DataLoader(CIFAR10('.', train=True, download=True, transform=ToTensor()))
+val_loader = DataLoader(CIFAR10('.', train=False, download=True, transform=ToTensor()))
 
-run(vgg16(), train_loader, val_loader)
+
+run(vgg16(num_classes=10), train_loader, val_loader)
 ```
 
 ## Configuration

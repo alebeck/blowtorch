@@ -184,6 +184,7 @@ class Run:
         self._logger.before_training_start(self._config.get_raw_config(), self._model, self._bound_functions)
 
         best_val = float('inf') if self._smaller_is_better else 0.
+        did_warn_train_metrics = False
 
         for epoch in range(start_epoch, start_epoch + self._max_epochs):
             metrics = {}  # stores metrics of current epoch
@@ -209,7 +210,13 @@ class Run:
                                 device=self._backend.device,
                                 epoch=epoch
                             )
-                            assert isinstance(train_metrics, dict), '"train_step" should return a metrics dict.'
+
+                            if not isinstance(train_metrics, dict):
+                                if not did_warn_train_metrics:
+                                    writer.warning('Received a single return value from `train_step`, assuming '
+                                                   '"loss". Return a dict to explicitly name the metric(s).')
+                                    did_warn_train_metrics = True
+                                train_metrics = {'loss': train_metrics}
 
                             if self._optimize_metric is None:
                                 metric = list(train_metrics.keys())[0]  # TODO possibility to state which one to optimize
@@ -267,7 +274,9 @@ class Run:
                             epoch=epoch
                         )
 
-                        assert isinstance(val_metrics, dict), '"val_step" should return a metrics dict.'
+                        if not isinstance(val_metrics, dict):
+                            val_metrics = {'loss': val_metrics}
+
                         t.set_current_metrics({
                             self._optimize_metric: std_round(val_metrics[self._optimize_metric].item())})
                         step_metrics.append({k: float(v) for k, v in val_metrics.items()})
