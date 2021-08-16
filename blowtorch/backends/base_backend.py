@@ -52,3 +52,9 @@ class BaseBackend:
         Moves a batch of data onto the designated device. `data` can be arbitrarily nested.
         """
         pass
+
+    def synchronize_metrics(self, metrics):
+        """
+        When doing distributed training, averages a given metrics dict across all processes in process group.
+        """
+        pass

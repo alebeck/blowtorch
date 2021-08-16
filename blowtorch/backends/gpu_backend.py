@@ -37,15 +37,15 @@ class GPUBackend(BaseBackend):
 
         self.use_ddp = num_nodes > 1 or num_gpus_per_node > 1
         self.world_size = num_nodes * num_gpus_per_node
+        self.device = None
+        self.model = None
         self.optimizers = {}
         self.schedulers = {}
-
-        assert False  # todo seed (maybe global seed + rank),
 
         if enable_amp and not AMP_AVAILABLE:
             raise ValueError('AMP is not supported by your PyTorch version, try torch>=1.6.')
 
-    def dispatch(self, model, train_fn, config_optim_fn, checkpoint: Optional[dict]):
+    def dispatch(self, model, train_fn, config_optim_fn, checkpoint: Optional[dict] = None):
         if self.use_ddp:
             def train_fn_wrapper(local_rank):
                 rank = self.node_rank * self.num_gpus_per_node + local_rank
@@ -53,8 +53,8 @@ class GPUBackend(BaseBackend):
                     with writer.task('Waiting for all nodes to join'):
                         self._init_ddp(rank)  # blocks
                     with writer.task('Setting up distributed environment'):
-                        device = torch.device(f'cuda:{local_rank}')
-                        _model = self._setup(model, device, config_optim_fn, checkpoint)
+                        self.device = torch.device(f'cuda:{local_rank}')
+                        self._setup(model, self.device, config_optim_fn, checkpoint)
                         # free memory associated with checkpoint
                         del checkpoint
                         # wait for all processes
@@ -62,13 +62,13 @@ class GPUBackend(BaseBackend):
 
                 # suppress stdout for all processes except rank 0
                 with suppress(rank != 0):
-                    train_fn(_model, rank)
+                    train_fn(self.model, rank)
                 # TODO destroy ddp env (use desctructor handler in backend that is called from run on abort-c)
             mp.spawn(train_fn_wrapper, nprocs=self.num_gpus_per_node)
         else:
-            device = torch.device('cuda:0')
-            _model = self._setup(model, device, config_optim_fn, checkpoint)
-            train_fn(_model, rank=0)
+            self.device = torch.device('cuda:0')
+            self._setup(model, self.device, config_optim_fn, checkpoint)
+            train_fn(self.model, rank=0)
 
     def _init_ddp(self, rank):
         # if init method is env:// and the corresponding env variables are not set, assume local (single-node) training
@@ -91,9 +91,11 @@ class GPUBackend(BaseBackend):
             model = DDP(model, device_ids=[device], find_unused_parameters=self.ddp_find_unused_parameters)
 
         # setup optimizers for model parameters
-        optimizer_config = config_optim_fn(model)
-        self.optimizers = optimizer_config['optimizers']
-        self.schedulers = optimizer_config['schedulers']
+        optimizer_config = config_optim_fn(model=model)
+        if isinstance(optimizer_config, tuple):
+            self.optimizers, self.schedulers = optimizer_config
+        else:
+            self.optimizers, self.schedulers = optimizer_config, {}
         if not isinstance(self.optimizers, dict):
             self.optimizers = {'main': self.optimizers}
         if not isinstance(self.schedulers, dict):
@@ -101,17 +103,23 @@ class GPUBackend(BaseBackend):
 
         if checkpoint:
             self._set_optim_states(checkpoint['optimizers'])
+            self._set_scheduler_states(checkpoint['schedulers'])
+
         if self.use_ddp:
             # sync optimizer parameters from rank 0 to process group. Afterwards, all optimizers should remain
             # identical as they operate on the same model parameters and gradients
             self._sync_optim_states()
+            if self.schedulers:
+                self._sync_scheduler_states()
 
-        return model
+        self.model = model
 
     def __repr__(self):
-        return f'GPUBackend[{"distributed, " if self.num_nodes > 1 else ""}node {self.node_rank} ' \
-               f'{"(main node) " if self.node_rank == 0 else ""}of {self.num_nodes},' \
-               f' {self.num_gpus_per_node} GPUs per node{", using AMP" if self.enable_amp else ""}]'
+        if self.num_nodes == 1:
+            return f'GPUBackend[enable_amp={self.enable_amp}]'
+
+        return f'DistributedGPUBackend[node_rank={self.node_rank}, num_nodes={self.num_nodes}, ' \
+               f'num_gpus_per_node={self.num_gpus_per_node}, enable_amp={self.enable_amp}]'
 
     def prepare_data_loaders(self, train_loader, val_loader):
         if self.use_ddp:
@@ -125,8 +133,8 @@ class GPUBackend(BaseBackend):
                                      ' `ddp_set_samplers` and configure your DistributedSampler using the Run\'s '
                                      '`init` decorator or let blowtorch configure the appropriate samplers for you.')
                 if loader.batch_sampler.batch_size % self.world_size != 0:
-                    raise ValueError(f'Batch size {loader.batch_sampler.batch_size} should be divisible by the number'
-                                     f'of processes {self.world_size}.')
+                    raise ValueError(f'Batch size ({loader.batch_sampler.batch_size}) should be divisible by the number'
+                                     f'of training processes ({self.world_size}).')
 
                 wrapped_sampler = DistributedWrapper(loader.sampler)
                 loaders.append(replace_sampler(loader, wrapped_sampler, adjust_batch_size=True))
@@ -151,9 +159,30 @@ class GPUBackend(BaseBackend):
             tensor.backward()
             optimizer.step()
 
+    def scheduler_step(self, metrics):
+        for scheduler in self.schedulers.values():
+            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                scheduler.step(metrics)
+            else:
+                scheduler.step()
+
+    def synchronize_metrics(self, metrics):
+        if not self.use_ddp:
+            return
+        keys = metrics.keys()  # preserve order of metrics dict keys
+        metrics_tensor = torch.tensor([metrics[k] for k in keys]).float()
+        dist.reduce(metrics_tensor, 0)
+        metrics_tensor /= self.world_size
+        for i, key in enumerate(keys):
+            metrics[key] = float(metrics_tensor[i])
+
     def _set_optim_states(self, state_dicts):
         for name, state in state_dicts:
             self.optimizers[name].load_state_dict(state)
+
+    def _set_scheduler_states(self, state_dicts):
+        for name, state in state_dicts:
+            self.schedulers[name].load_state_dict(state)
 
     def _sync_optim_states(self):
         keys = sorted(self.optimizers.keys())
@@ -164,12 +193,14 @@ class GPUBackend(BaseBackend):
         dist.broadcast_object_list(broadcast_list, 0)
         self._set_optim_states({k: v for k, v in zip(keys, broadcast_list)})
 
-    def scheduler_step(self, metrics):
-        for scheduler in self.schedulers.values():
-            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                scheduler.step(metrics)
-            else:
-                scheduler.step()
+    def _sync_scheduler_states(self):
+        keys = sorted(self.schedulers.keys())
+        if dist.get_rank() == 0:
+            broadcast_list = [self.schedulers[k].state_dict() for k in keys]
+        else:
+            broadcast_list = [None for _ in keys]
+        dist.broadcast_object_list(broadcast_list, 0)
+        self._set_scheduler_states({k: v for k, v in zip(keys, broadcast_list)})
 
     def to_device(self, data):
-        return move_data_to_device(data, torch.device(self.gpu_id))
+        return move_data_to_device(data, self.device)

@@ -65,24 +65,6 @@ def set_by_path(dic, path, value):
 	loc[parts[-1]] = value
 
 
-def load_checkpoint(path):
-	path = Path(path)
-	if path.is_dir():
-		checkpoint_dir = path / 'checkpoints'
-		if not checkpoint_dir.exists():
-			raise FileNotFoundError(
-				f'No "checkpoints" directory found in resume directory {path}')
-		checkpoint_files = list(checkpoint_dir.glob('*.pt'))
-		if not checkpoint_files:
-			raise FileNotFoundError(f'No checkpoint file found in directory {checkpoint_dir}')
-		# sort w.r.t. epoch
-		checkpoint_files = sorted(checkpoint_files, key=lambda f: int(f.stem.split('_')[-1]))
-		checkpoint = torch.load(checkpoint_files[-1])
-	else:
-		checkpoint = torch.load(path)
-	return checkpoint
-
-
 # https://stackoverflow.com/a/50691665
 @contextmanager
 def suppress(out=True, err=False):

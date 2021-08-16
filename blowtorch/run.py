@@ -3,6 +3,7 @@ from typing import Optional, List, Union
 from pathlib import Path
 import random
 import functools
+import warnings
 from contextlib import nullcontext
 
 import numpy as np
@@ -13,7 +14,7 @@ from coolname import generate_slug, replace_random
 from . import _writer as writer
 from .backends.cpu_backend import CPUBackend
 from .backends.gpu_backend import GPUBackend
-from .utils import make_wrapper, get_highest_run, std_round, seed_all, load_checkpoint, set_deterministic
+from .utils import make_wrapper, get_highest_run, std_round, seed_all, set_deterministic
 from .config import TrainingConfig
 from .bound_functions import BoundFunctions
 from .loggers import BaseLogger, LoggerSet, StandardLogger
@@ -31,10 +32,12 @@ class Run:
         self._logger = None
         self.train_loader = None
         self.val_loader = None
+        self._loggers = None
         self._max_epochs = None
         self._use_gpu = None
         self._resume_checkpoint = None
         self._save_path = None
+        self.checkpoints_path = None
         self._run_name = None
         self._optimize_metric = None
         self._checkpoint_metric = None
@@ -49,6 +52,7 @@ class Run:
 
         self._config = TrainingConfig([] if config_files is None else config_files)
 
+        self.random_seed = random_seed
         if random_seed:
             seed_all(random_seed)
 
@@ -104,7 +108,8 @@ class Run:
             save_path: path to directory that blowtorch will save logs and checkpoints to
             run_name: name associated with this run, will be randomly created if None
             optimize_metric: train metric that will be used for optimization, will pick the first returned one if None
-            checkpoint_metric: validation metric that will be used for checkpointing, will pick the first returned one if None
+            checkpoint_metric: validation metric that will be used for checkpointing, will pick the first returned one
+            if None
             checkpoint_every: every checkpoint_every epochs a checkpoint is saved, disregarding performance of the
             current model. This way it's always possible to resume the run from the latest (or near-latest) state
             smaller_is_better: ``True`` if we want to minimize, ``False`` if maximize
@@ -114,6 +119,7 @@ class Run:
         """
         self.train_loader = train_loader
         self.val_loader = val_loader
+        self._loggers = loggers
         self._max_epochs = max_epochs
         self._use_gpu = use_gpu
         self._resume_checkpoint = resume_checkpoint
@@ -154,24 +160,8 @@ class Run:
             self._save_path = self._save_path / (datetime.now().strftime("%y-%m-%d_%H-%M-%S") + '_' + self._run_name)
             self._save_path.mkdir(parents=True, exist_ok=False)
 
-        checkpoints_path = self._save_path / 'checkpoints'
-        checkpoints_path.mkdir(exist_ok=True)
-
-        if loggers is None:
-            loggers = []
-        if not isinstance(loggers, (list, tuple)):
-            loggers = [loggers]
-        self._logger = LoggerSet([StandardLogger()] + loggers)
-        self._logger.setup(self._save_path, self._run_name, self._resume_checkpoint is not None)
-
-        if 'train_step' in self._bound_functions and 'val_step' in self._bound_functions:
-            mode = 'step'
-        elif 'train_epoch' in self._bound_functions and 'val_epoch' in self._bound_functions:
-            mode = 'epoch'
-        else:
-            err_str = 'Need to register either both train_step/val_step or both train_epoch/val_epoch functions.'
-            writer.error(err_str)
-            raise ValueError(err_str)
+        self.checkpoints_path = self._save_path / 'checkpoints'
+        self.checkpoints_path.mkdir(exist_ok=True)
 
         # backend initialization
         try:
@@ -189,24 +179,29 @@ class Run:
         checkpoint = None
         if self._is_main_node:
             if self._resume_checkpoint:
-                # only need to pass model weights on main process, for it is distributed to the other nodes automatically
+                # only need to pass weights on main process, for it is distributed to the other nodes automatically
                 writer.info(f'Resuming training from checkpoint {self._resume_checkpoint}')
-                checkpoint = torch.load(checkpoints_path / 'latest', map_location='cpu')
+                checkpoint = torch.load(self.checkpoints_path / 'latest', map_location='cpu')
                 self._start_epoch = checkpoint['epoch']
 
             if not self._optimize_first and self._start_epoch == 0:
                 writer.info('Not optimizing during first epoch')
 
-            self._logger.before_training_start(self._config.get_raw_config(), model, self._bound_functions)
-
         self._backend.dispatch(model, self._train_fn, self._bound_functions['configure_optimizers'], checkpoint)
 
     def _train_fn(self, model, rank):
+        if self.random_seed:
+            # we want every training process to have a different, but deterministic random seed
+            seed_all(self.random_seed + rank)
+
         is_main = rank == 0
         best_val = float('inf') if self._smaller_is_better else 0.
         did_warn_train_metrics = False
 
-        # give backend the chance to wrap dataloaders, e.g. with samplers for multinode training
+        self._init_loggers(is_main)
+        self._logger.before_training_start(self._config.get_raw_config(), model, self._bound_functions)
+
+        # give backend the chance to wrap dataloaders, e.g. with samplers for multi-process training
         train_loader, val_loader = self._backend.prepare_data_loaders(self.train_loader, self.val_loader)
 
         for epoch in range(self._start_epoch, self._start_epoch + self._max_epochs):
@@ -236,7 +231,7 @@ class Run:
                         )
 
                         if not isinstance(train_metrics, dict):
-                            if not did_warn_train_metrics and self._is_main_node:
+                            if not did_warn_train_metrics:
                                 writer.warning('Received a single return value from `train_step`, assuming '
                                                '"loss". Return a dict to explicitly name the metric(s).')
                                 did_warn_train_metrics = True
@@ -259,13 +254,21 @@ class Run:
                             model=model,
                             is_validate=False,
                             device=self._backend.device,
-                            epoch=epoch
+                            epoch=epoch,
+                            metrics=step_metrics[-1]
                         )
 
                 # calculate mean metrics
                 metrics['train'] = {
                     metric: np.array([dic[metric] for dic in step_metrics]).mean() for metric in step_metrics[0]
                 }
+
+                import sys
+                sys.stderr.write(f'[DEBUG] metrics before sync: {metrics["train"]}')
+                sys.stderr.flush()
+
+                # give backend the possibility to synchronize metrics across multiple processes, blocking
+                self._backend.synchronize_metrics(metrics['train'])
 
                 self._logger.after_pass(metrics['train'], epoch, is_validate=False)
 
@@ -298,11 +301,20 @@ class Run:
                         self._optimize_metric: std_round(val_metrics[self._optimize_metric].item())})
                     step_metrics.append({k: float(v) for k, v in val_metrics.items()})
 
-                # calculate mean metrics
-                # todo agg function
+                    if 'after_val_step' in self._bound_functions:
+                        self._bound_functions['after_val_step'](
+                            model=model,
+                            is_validate=True,
+                            device=self._backend.device,
+                            epoch=epoch,
+                            metrics=step_metrics[-1]
+                        )
+
                 metrics['val'] = {
                     metric: np.array([dic[metric] for dic in step_metrics]).mean() for metric in step_metrics[0]
                 }
+
+                self._backend.synchronize_metrics(metrics['val'])
 
                 # TODO specify metric to do scheduling on
                 # if self._optimize_first is False, a warning will be raised by the schedulers which suggests that
@@ -330,7 +342,8 @@ class Run:
             is_best = (self._smaller_is_better and metrics['val'][self._checkpoint_metric] < best_val) or \
                       (not self._smaller_is_better and metrics['val'][self._checkpoint_metric] > best_val)
 
-            if is_best or epoch % self._checkpoint_every == 0:
+            # do checkpointing
+            if is_main and (is_best or epoch % self._checkpoint_every == 0):
                 with writer.task(f'Saving checkpoint'):
                     checkpoint = {
                         'model': model.state_dict(),
@@ -338,11 +351,11 @@ class Run:
                         'schedulers': {name: sched.state_dict() for name, sched in self._backend.schedulers.items()},
                         'next_epoch': epoch + 1
                     }
-                    path = checkpoints_path / f'epoch_{epoch}.pt'
+                    path = self.checkpoints_path / f'epoch_{epoch}.pt'
                     torch.save(checkpoint, path)
 
-                    latest_path = checkpoints_path / 'latest'
-                    best_path = checkpoints_path / 'best'
+                    latest_path = self.checkpoints_path / 'latest'
+                    best_path = self.checkpoints_path / 'best'
 
                     if latest_path.is_symlink():
                         # delete previous latest checkpoint
@@ -365,6 +378,19 @@ class Run:
                 best_val = metrics['val'][self._checkpoint_metric]
 
         writer.success(f'Training finished')
+
+    def _init_loggers(self, is_main):
+        if self._loggers is None:
+            self._loggers = []
+        if not isinstance(self._loggers, (list, tuple)):
+            self._loggers = [self._loggers]
+
+        if is_main:
+            self._logger = LoggerSet([StandardLogger()] + self._loggers)
+        else:
+            self._logger = LoggerSet([])
+
+        self._logger.setup(self._save_path, self._run_name, self._resume_checkpoint is not None)
 
     def get_raw_config(self):
         return self._config.get_raw_config()

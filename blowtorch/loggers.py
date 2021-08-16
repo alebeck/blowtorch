@@ -123,7 +123,7 @@ class TensorBoardLogger(BaseLogger):
         self.log_dir = log_dir
         self._kwargs = kwargs
 
-    def setup(self, save_path: Path, run_name: str):
+    def setup(self, save_path: Path, run_name: str, resume: bool):
         if self.log_dir is None:
             # use blowtorch save_path
             log_dir = save_path
