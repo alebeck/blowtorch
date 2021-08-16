@@ -1,18 +1,22 @@
-from abc import ABC, abstractmethod
+from abc import abstractmethod
+from typing import Optional
 
 
 class BaseBackend:
 
     @abstractmethod
-    def setup(self, model, config_optimizers_fn, checkpoint):
+    def dispatch(self, model, train_fn, config_optim_fn, checkpoint: Optional[dict] = None):
         """
-        Initializes backend, moves model to device and also initializes optimizers.
+        Dispatches a training function to one or many processes on one or many compute nodes and does required setup
         """
         pass
 
     @abstractmethod
     def get_name(self):
         pass
+
+    def prepare_data_loaders(self, train_loader, val_loader):
+        return train_loader, val_loader
 
     @abstractmethod
     def train_step(self, train_fn):
