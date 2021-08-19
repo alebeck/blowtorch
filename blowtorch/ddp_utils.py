@@ -152,10 +152,6 @@ class DistributedWrapper(Sampler):
         indices = indices[self.rank:self.total_size:self.num_replicas]
         assert len(indices) == self.num_samples
 
-        import sys
-        sys.stderr.write(f'[DEBUG] indices picked for rank {self.rank}: {indices}')
-        sys.stderr.flush()
-
         return iter(indices)
 
     def __len__(self) -> int:

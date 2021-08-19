@@ -2,7 +2,6 @@ import os
 import sys
 import time
 import random
-from functools import wraps
 from pathlib import Path
 from contextlib import redirect_stdout, redirect_stderr, contextmanager, ExitStack
 
@@ -15,13 +14,6 @@ import numpy as np
 AMP_AVAILABLE = hasattr(torch.cuda, "amp") and hasattr(torch.cuda.amp, "autocast")
 IS_TTY = sys.stdout.isatty()
 NON_TTY_UPDATE_INTERVAL = 8000  # milliseconds
-
-
-def make_wrapper(f):
-	@wraps(f)
-	def wrapper(*args, **kwargs):
-		return f(*args, **kwargs)
-	return wrapper
 
 
 def deep_merge(a, b):

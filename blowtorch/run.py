@@ -14,7 +14,8 @@ from coolname import generate_slug, replace_random
 from . import _writer as writer
 from .backends.cpu_backend import CPUBackend
 from .backends.gpu_backend import GPUBackend
-from .utils import make_wrapper, get_highest_run, std_round, seed_all, set_deterministic
+from .bound_functions import call
+from .utils import get_highest_run, std_round, seed_all, set_deterministic
 from .config import TrainingConfig
 from .bound_functions import BoundFunctions
 from .loggers import BaseLogger, LoggerSet, StandardLogger
@@ -221,14 +222,15 @@ class Run:
                         # don't calculate grads if we're in epoch zero and not optimizing
                         torch.set_grad_enabled(self._optimize_first or epoch > 0)
 
-                        train_metrics = self._backend.train_step(
-                            self._bound_functions['train_step'],
-                            batch=batch,
-                            model=model,
-                            is_validate=False,
-                            device=self._backend.device,
-                            epoch=epoch
-                        )
+                        with self._backend.get_train_step_context():
+                            train_metrics = call(
+                                self._bound_functions['train_step'],
+                                batch=batch,
+                                model=model,
+                                is_validate=False,
+                                device=self._backend.device,
+                                epoch=epoch
+                            )
 
                         if not isinstance(train_metrics, dict):
                             if not did_warn_train_metrics:
@@ -250,7 +252,8 @@ class Run:
                     step_metrics.append({k: float(v) for k, v in train_metrics.items()})
 
                     if 'after_train_step' in self._bound_functions:
-                        self._bound_functions['after_train_step'](
+                        call(
+                            self._bound_functions['after_train_step'],
                             model=model,
                             is_validate=False,
                             device=self._backend.device,
@@ -262,10 +265,6 @@ class Run:
                 metrics['train'] = {
                     metric: np.array([dic[metric] for dic in step_metrics]).mean() for metric in step_metrics[0]
                 }
-
-                import sys
-                sys.stderr.write(f'[DEBUG] metrics before sync: {metrics["train"]}')
-                sys.stderr.flush()
 
                 # give backend the possibility to synchronize metrics across multiple processes, blocking
                 self._backend.synchronize_metrics(metrics['train'])
@@ -285,14 +284,15 @@ class Run:
                 for batch in t.tqdm(val_loader):
                     batch = self._backend.to_device(batch)
 
-                    val_metrics = self._backend.val_step(
-                        self._bound_functions['val_step'],
-                        batch=batch,
-                        model=model,
-                        is_validate=True,
-                        device=self._backend.device,
-                        epoch=epoch
-                    )
+                    with self._backend.get_val_step_context():
+                        val_metrics = call(
+                            self._bound_functions['val_step'],
+                            batch=batch,
+                            model=model,
+                            is_validate=True,
+                            device=self._backend.device,
+                            epoch=epoch
+                        )
 
                     if not isinstance(val_metrics, dict):
                         val_metrics = {'loss': val_metrics}
@@ -302,7 +302,8 @@ class Run:
                     step_metrics.append({k: float(v) for k, v in val_metrics.items()})
 
                     if 'after_val_step' in self._bound_functions:
-                        self._bound_functions['after_val_step'](
+                        call(
+                            self._bound_functions['after_val_step'],
                             model=model,
                             is_validate=True,
                             device=self._backend.device,
@@ -416,28 +417,28 @@ class Run:
 
     def init(self, f):
         self._bound_functions['init'] = f
-        return make_wrapper(f)
+        return f
 
     def train_step(self, f):
         self._bound_functions['train_step'] = f
-        return make_wrapper(f)
+        return f
 
     def after_train_step(self, f):
         self._bound_functions['after_train_step'] = f
-        return make_wrapper(f)
+        return f
 
     def validate_step(self, f):
         self._bound_functions['val_step'] = f
-        return make_wrapper(f)
+        return f
 
     def train_epoch(self, f):
         self._bound_functions['train_epoch'] = f
-        return make_wrapper(f)
+        return f
 
     def validate_epoch(self, f):
         self._bound_functions['val_epoch'] = f
-        return make_wrapper(f)
+        return f
 
     def configure_optimizers(self, f):
         self._bound_functions['configure_optimizers'] = f
-        return make_wrapper(f)
+        return f

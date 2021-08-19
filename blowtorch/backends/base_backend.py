@@ -19,16 +19,16 @@ class BaseBackend:
         return train_loader, val_loader
 
     @abstractmethod
-    def train_step(self, train_fn):
+    def get_train_step_context(self):
         """
-        Executes the train step given the user defined train step function.
+        Returns a ContextManager in which the train step is executed in
         """
         pass
 
     @abstractmethod
-    def val_step(self, val_fn):
+    def get_val_step_context(self):
         """
-        Executes the val step given the user defined val step function.
+        Returns a ContextManager in which the val step is executed in
         """
         pass
 
