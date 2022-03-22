@@ -1,3 +1,4 @@
+from collections import defaultdict
 from datetime import datetime
 from typing import Optional, List, Union
 from pathlib import Path
@@ -34,7 +35,7 @@ class Run:
         self.train_loader = None
         self.val_loader = None
         self._loggers = None
-        self._max_epochs = None
+        self._num_epochs = None
         self._use_gpu = None
         self._resume_checkpoint = None
         self._save_path = None
@@ -51,6 +52,8 @@ class Run:
         self._start_epoch = 0
         self._is_main_node = None
 
+        self._train_loader = None
+        self._val_loaders = []
         self._config = TrainingConfig([] if config_files is None else config_files)
 
         self.random_seed = random_seed
@@ -66,11 +69,9 @@ class Run:
     # todo look at pl GPUbackend (amp optimizuation etc)
     def run(self,
             model: torch.nn.Module,
-            train_loader: DataLoader,
-            val_loader: DataLoader,
             *,
             loggers: Optional[List[BaseLogger]] = None,
-            max_epochs=1,
+            num_epochs=10,
             use_gpu=True,
             num_nodes=1,
             num_gpus_per_node=1,
@@ -94,10 +95,8 @@ class Run:
 
         Args:
             model:
-            train_loader:
-            val_loader:
             loggers: list of loggers that subscribe to various logging events
-            max_epochs:
+            num_epochs:
             use_gpu:
             num_nodes:
             num_gpus_per_node:
@@ -118,10 +117,8 @@ class Run:
             enable_amp:
             detect_anomalies: enable autograd anomaly detection
         """
-        self.train_loader = train_loader
-        self.val_loader = val_loader
         self._loggers = loggers
-        self._max_epochs = max_epochs
+        self._num_epochs= num_epochs
         self._use_gpu = use_gpu
         self._resume_checkpoint = resume_checkpoint
         self._run_name = run_name
@@ -196,25 +193,24 @@ class Run:
             seed_all(self.random_seed + rank)
 
         is_main = rank == 0
-        best_val = float('inf') if self._smaller_is_better else 0.
+        best_val = float('inf') if self._smaller_is_better else float('-inf')
         did_warn_train_metrics = False
 
         self._init_loggers(is_main)
         self._logger.before_training_start(self._config.get_raw_config(), model, self._bound_functions)
 
         # give backend the chance to wrap dataloaders, e.g. with samplers for multi-process training
-        train_loader, val_loader = self._backend.prepare_data_loaders(self.train_loader, self.val_loader)
+        train_loader, *val_loaders = self._backend.prepare_data_loaders(self._train_loader, *self._val_loaders)
 
-        for epoch in range(self._start_epoch, self._start_epoch + self._max_epochs):
-            # stores metrics of current epoch
-            metrics = {}
+        for epoch in range(self._start_epoch, self._start_epoch + self._num_epochs):
 
             # ===== TRAINING ==== #
+
             model.train()
             torch.set_grad_enabled(True)
+            train_metrics = defaultdict(float)
 
             with writer.task(f'Training epoch {epoch}') as t:
-                step_metrics = []
                 for batch in t.tqdm(train_loader):
                     batch = self._backend.to_device(batch)
 
@@ -223,99 +219,89 @@ class Run:
                         torch.set_grad_enabled(self._optimize_first or epoch > 0)
 
                         with self._backend.get_train_step_context():
-                            train_metrics = call(
-                                self._bound_functions['train_step'],
-                                batch=batch,
-                                model=model,
-                                is_validate=False,
-                                device=self._backend.device,
-                                epoch=epoch
-                            )
+                            metrics = call(self._bound_functions['train_step'], batch=batch, model=model,
+                                           is_validate=False, device=self._backend.device, epoch=epoch)
 
-                        if not isinstance(train_metrics, dict):
+                        if not isinstance(metrics, dict):
                             if not did_warn_train_metrics:
                                 writer.warning('Received a single return value from `train_step`, assuming '
                                                '"loss". Return a dict to explicitly name the metric(s).')
                                 did_warn_train_metrics = True
-                            train_metrics = {'loss': train_metrics}
+                            metrics = {'loss': metrics}
 
                         if self._optimize_metric is None:
-                            metric = list(train_metrics.keys())[0]  # TODO possibility to state which one to optimize
+                            metric = list(metrics.keys())[0]  # TODO possibility to state which one to optimize
                             writer.info(f'Selected metric "{metric}" for minimization')
                             self._optimize_metric = metric
 
                         if self._optimize_first or epoch > 0:
-                            self._backend.optim_step(train_metrics[self._optimize_metric])
+                            self._backend.optim_step(metrics[self._optimize_metric])
+
+                    for key in metrics:
+                        train_metrics[key] += float(metrics[key]) / len(train_loader)
 
                     t.set_current_metrics({
-                        self._optimize_metric: std_round(train_metrics[self._optimize_metric].item())})
-                    step_metrics.append({k: float(v) for k, v in train_metrics.items()})
+                        self._optimize_metric: std_round(metrics[self._optimize_metric].item())
+                    })
 
-                    if 'after_train_step' in self._bound_functions:
-                        call(
-                            self._bound_functions['after_train_step'],
-                            model=model,
-                            is_validate=False,
-                            device=self._backend.device,
-                            epoch=epoch,
-                            metrics=step_metrics[-1]
-                        )
+                # give backend the possibility to synchronize metrics across multiple processes (blocking)
+                self._backend.synchronize_metrics(train_metrics)
 
-                # calculate mean metrics
-                metrics['train'] = {
-                    metric: np.array([dic[metric] for dic in step_metrics]).mean() for metric in step_metrics[0]
-                }
+                if 'after_train' in self._bound_functions:
+                    call(self._bound_functions['after_train'], metrics=train_metrics, model=model,
+                         device=self._backend.device, epoch=epoch)
+                    for m in train_metrics:
+                        try:
+                            train_metrics[m] = float(train_metrics[m])
+                        except TypeError:
+                            pass
 
-                # give backend the possibility to synchronize metrics across multiple processes, blocking
-                self._backend.synchronize_metrics(metrics['train'])
+                self._logger.after_pass(train_metrics, epoch, is_validate=False)
 
-                self._logger.after_pass(metrics['train'], epoch, is_validate=False)
-
-                status_str = f'[Epoch {epoch} / Train] ' \
-                             + ' '.join([f'{k}: {std_round(v)}' for k, v in metrics['train'].items()])
-                t.success(status_str)
+                t.success(f'[Epoch {epoch} / Train] ' +
+                          ' '.join([f'{k}: {std_round(v)}' for k, v in train_metrics.items() if isinstance(v, float)]))
 
             # ===== VALIDATION ==== #
+
             model.eval()
             torch.set_grad_enabled(False)
+            val_metrics_list = []
 
             with writer.task(f'Validating epoch {epoch}') as t:
-                step_metrics = []
-                for batch in t.tqdm(val_loader):
-                    batch = self._backend.to_device(batch)
+                for val_loader, val_func in zip(val_loaders, self._bound_functions['val_step']):
+                    val_metrics = defaultdict(float)
+                    for batch in t.tqdm(val_loader):
+                        batch = self._backend.to_device(batch)
 
-                    with self._backend.get_val_step_context():
-                        val_metrics = call(
-                            self._bound_functions['val_step'],
-                            batch=batch,
-                            model=model,
-                            is_validate=True,
-                            device=self._backend.device,
-                            epoch=epoch
-                        )
+                        with self._backend.get_val_step_context():
+                            metrics = call(val_func, batch=batch, model=model, is_validate=True,
+                                           device=self._backend.device, epoch=epoch)
 
-                    if not isinstance(val_metrics, dict):
-                        val_metrics = {'loss': val_metrics}
+                        if not isinstance(metrics, dict):
+                            metrics = {'loss': metrics}
 
-                    t.set_current_metrics({
-                        self._optimize_metric: std_round(val_metrics[self._optimize_metric].item())})
-                    step_metrics.append({k: float(v) for k, v in val_metrics.items()})
+                        for key in metrics:
+                            val_metrics[key] += float(metrics[key]) / len(val_loader)
 
-                    if 'after_val_step' in self._bound_functions:
-                        call(
-                            self._bound_functions['after_val_step'],
-                            model=model,
-                            is_validate=True,
-                            device=self._backend.device,
-                            epoch=epoch,
-                            metrics=step_metrics[-1]
-                        )
+                        display_metric = self._optimize_metric if self._optimize_metric in metrics else \
+                            list(metrics.keys())[0]
+                        t.set_current_metrics({display_metric: std_round(metrics[display_metric].item())})
 
-                metrics['val'] = {
-                    metric: np.array([dic[metric] for dic in step_metrics]).mean() for metric in step_metrics[0]
-                }
+                    self._backend.synchronize_metrics(val_metrics)
 
-                self._backend.synchronize_metrics(metrics['val'])
+                    if 'after_val' in self._bound_functions:
+                        call(self._bound_functions['after_val'], metrics=val_metrics, model=model,
+                             device=self._backend.device, epoch=epoch)
+                        for m in val_metrics:
+                            try:
+                                val_metrics[m] = float(val_metrics[m])
+                            except TypeError:
+                                pass
+
+                    val_metrics_list.append(val_metrics)
+
+                # join val_metrics dicts
+                val_metrics = {k: v for d in val_metrics_list for k, v in d.items()}
 
                 # TODO specify metric to do scheduling on
                 # if self._optimize_first is False, a warning will be raised by the schedulers which suggests that
@@ -324,26 +310,24 @@ class Run:
                 # of self._optimize_first is False, and the epoch counter should indeed be increased.
                 if epoch == 0 and not self._optimize_first:
                     warnings.simplefilter(action='ignore', category=UserWarning)
-                    self._backend.scheduler_step(metrics['val'][self._optimize_metric])
+                    self._backend.scheduler_step(val_metrics[self._optimize_metric])
                     warnings.filterwarnings('default')
                 else:
-                    self._backend.scheduler_step(metrics['val'][self._optimize_metric])
+                    self._backend.scheduler_step(val_metrics[self._optimize_metric])
 
-                self._logger.after_pass(metrics['val'], epoch, is_validate=True)
+                self._logger.after_pass(val_metrics, epoch, is_validate=True)
 
-                status_str = f'[Epoch {epoch} / Val]   ' \
-                             + ' '.join([f'{k}: {std_round(v)}' for k, v in metrics['val'].items()])
-                t.success(status_str)
+                t.success(f'[Epoch {epoch} / Val]   ' +
+                          ' '.join([f'{k}: {std_round(v)}' for k, v in val_metrics.items() if isinstance(v, float)]))
 
             if self._checkpoint_metric is None:
                 metric = list(val_metrics.keys())[0]
                 writer.info(f'Selected metric "{metric}" for checkpointing')
                 self._checkpoint_metric = metric
 
-            is_best = (self._smaller_is_better and metrics['val'][self._checkpoint_metric] < best_val) or \
-                      (not self._smaller_is_better and metrics['val'][self._checkpoint_metric] > best_val)
+            is_best = (self._smaller_is_better and val_metrics[self._checkpoint_metric] < best_val) or \
+                      (not self._smaller_is_better and val_metrics[self._checkpoint_metric] > best_val)
 
-            # do checkpointing
             if is_main and (is_best or epoch % self._checkpoint_every == 0):
                 with writer.task(f'Saving checkpoint'):
                     checkpoint = {
@@ -376,7 +360,7 @@ class Run:
                             checkpoint_file.unlink()
                         best_path.symlink_to(path.name)
 
-                best_val = metrics['val'][self._checkpoint_metric]
+                best_val = val_metrics[self._checkpoint_metric]
 
         writer.success(f'Training finished')
 
@@ -415,30 +399,43 @@ class Run:
 
     # TODO docstrings
 
-    def init(self, f):
-        self._bound_functions['init'] = f
-        return f
-
-    def train_step(self, f):
-        self._bound_functions['train_step'] = f
-        return f
-
-    def after_train_step(self, f):
-        self._bound_functions['after_train_step'] = f
-        return f
-
-    def validate_step(self, f):
-        self._bound_functions['val_step'] = f
-        return f
-
-    def train_epoch(self, f):
-        self._bound_functions['train_epoch'] = f
-        return f
-
-    def validate_epoch(self, f):
-        self._bound_functions['val_epoch'] = f
-        return f
-
     def configure_optimizers(self, f):
         self._bound_functions['configure_optimizers'] = f
+        return f
+
+    def train_step(self, data_loader):
+        def decorator(f):
+            self._bound_functions['train_step'] = f
+            self._train_loader = data_loader
+            return f
+        return decorator
+
+    def validate_step(self, data_loader):
+        def decorator(f):
+            self._bound_functions['val_step'] = f
+            self._val_loaders.append(data_loader)
+            return f
+        return decorator
+
+    # hooks
+    def after_train(self, f):
+        """
+        Registers a hook called after every training pass. Supported parameters:
+        `metrics` - dict of this epoch's synchronized training metrics, can be mutated
+        `model` - the model
+        `device` - device that the model/data resides on
+        `epoch` - current epoch number
+        """
+        self._bound_functions['after_train'] = f
+        return f
+
+    def after_val(self, f):
+        """
+        Registers a hook called after every validation pass. Supported parameters:
+        `metrics` - dict of this epoch's synchronized validation metrics, can be mutated
+        `model` - the model
+        `device` - device that the model/data resides on
+        `epoch` - current epoch number
+        """
+        self._bound_functions['after_val'] = f
         return f

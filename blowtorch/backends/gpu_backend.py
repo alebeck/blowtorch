@@ -130,11 +130,11 @@ class GPUBackend(BaseBackend):
         return f'DistributedGPUBackend[node_rank={self.node_rank}, num_nodes={self.num_nodes}, ' \
                f'num_gpus_per_node={self.num_gpus_per_node}, enable_amp={self.enable_amp}]'
 
-    def prepare_data_loaders(self, train_loader, val_loader):
+    def prepare_data_loaders(self, *loaders):
         if self.use_ddp:
             # wrap samplers in DistributedWrapper
-            loaders = []
-            for loader in (train_loader, val_loader):
+            prepared = []
+            for loader in loaders:
                 if has_iterable_dataset(loader):
                     raise NotImplementedError('IterableDataset currently not supported with DDP')
                 if isinstance(loader.sampler, DistributedSampler):
@@ -146,11 +146,11 @@ class GPUBackend(BaseBackend):
                                      f'of training processes ({self.world_size}).')
 
                 wrapped_sampler = DistributedWrapper(loader.sampler)
-                loaders.append(replace_sampler(loader, wrapped_sampler, adjust_batch_size=True))
-            return loaders
+                prepared.append(replace_sampler(loader, wrapped_sampler, adjust_batch_size=True))
+            return prepared
 
         # else pass through loaders
-        return train_loader, val_loader
+        return loaders
 
     def get_train_step_context(self):
         return cuda.amp.autocast(self.enable_amp)

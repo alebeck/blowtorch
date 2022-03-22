@@ -4,12 +4,13 @@ from . import _writer as writer
 
 
 AVAILABLE_PARAMS = {
+    'configure_optimizers': ['model'],
     'train_step': ['batch', 'model', 'is_validate', 'device', 'epoch'],
-    'after_train_step': ['model', 'is_validate', 'device', 'epoch'],
     'val_step': ['batch', 'model', 'is_validate', 'device', 'epoch'],
-    'train_epoch': ['data_loader', 'model', 'is_validate', 'optimizers'],
-    'val_epoch': ['data_loader', 'model', 'is_validate', 'optimizers'],
-    'configure_optimizers': ['model']
+    'after_train': ['metrics', 'model', 'device', 'epoch'],
+    'after_val': ['metrics', 'model', 'device', 'epoch'],
+    # 'train_epoch': ['model', 'is_validate', 'device', 'epoch', 'optimizers'],
+    # 'val_epoch': ['model', 'is_validate', 'device', 'epoch'],
 }
 
 
@@ -36,7 +37,15 @@ class BoundFunctions:
             writer.error(err_str)
             raise ValueError(err_str)
 
-        self.functions[key] = value
+        if key == 'val_step':
+            # we permit multiple val_step functions to be registered
+            self.functions[key] = self.functions[key] + [value] if key in self.functions else [value]
+        elif key in self.functions:
+            err_str = f'Can only register one {key} function.'
+            writer.error(err_str)
+            raise ValueError(err_str)
+        else:
+            self.functions[key] = value
 
     def __getitem__(self, item):
         return self.functions[item]

@@ -1,6 +1,6 @@
 # blowtorch
 
-Intuitive, high-level training framework for research and development. It abstracts away boilerplate code normally associated with training and evaluating PyTorch models, without limiting flexibility. Blowtorch provides:
+Intuitive, high-level PyTorch training framework for research and development. Abstracting away boilerplate code normally associated with training and evaluating PyTorch models, with a more intuitive API then similar frameworks. Blowtorch provides:
 
 * A way to specify training runs at high level, while not giving up on fine-grained control
 * Automated checkpointing, logging and resuming of runs
@@ -25,8 +25,12 @@ from blowtorch import Run
 
 run = Run(random_seed=123)
 
-@run.train_step
-@run.validate_step
+train_loader = DataLoader(CIFAR10('.', train=True, download=True, transform=ToTensor()))
+val_loader = DataLoader(CIFAR10('.', train=False, download=True, transform=ToTensor()))
+
+
+@run.train_step(train_loader)
+@run.validate_step(val_loader)
 def step(batch, model):
     x, y = batch
     y_hat = model(x)
@@ -38,15 +42,15 @@ def step(batch, model):
 def configure_optimizers(model):
     return Adam(model.parameters())
 
-train_loader = DataLoader(CIFAR10('.', train=True, download=True, transform=ToTensor()))
-val_loader = DataLoader(CIFAR10('.', train=False, download=True, transform=ToTensor()))
 
-run(vgg16(num_classes=10), train_loader, val_loader)
+run(vgg16(num_classes=10), num_epochs=100)
 ```
 
 Note that in the above example, blowtorch automatically takes care of moving the model and tensors to the appropriate devices. It automatically sets the model to train/eval mode and activates/deactivates gradient calculation, respectively. Furthermore, logging and checkpointing is taken care of automatically.
 
-## Configuration
+## Features
+
+### Configuration management
 You can pass multiple configuration files in YAML format to your `Run`, e.g.
 ```python
 run = Run(config_files=['config/default.yaml'])
@@ -57,7 +61,43 @@ Configuration values can then be accessed via e.g. `run['model']['num_layers']`.
 python train.py with model.num_layers=4 model.use_dropout=True
 ```
 
-## Run options
+### Automatic argument injection
+If you need the epoch number or torch device (or other things) in your decorated functions, just specify them. Blowtorch will analyze the function signature and inject the requested arguments automatically:
+
+```python
+@run.train_step(train_loader)
+def train_step(batch, model, epoch, device):
+    ...
+```
+
+Supported arguments for all decorated functions can be found in the respective docstrings.
+
+### Logging
+Blowtorch will create a folder with name "[timestamp]-[name]-[sequential integer]" for each run inside the `run.save_path` directory. Here it will save the runs's configuration, metrics, a model summary, checkoints as well as source code. Additional loggers can be added through `Run`s `loggers` parameter:
+
+* `blowtorch.loggers.WandbLogger`: Logs to Weights & Biases
+* `blowtorch.loggers.TensorBoardLogger`: Logs to TensorBoard
+
+Custom loggers can be created by subclassing `blowtorch.loggers.BaseLogger`.
+
+### Flexible validation & checkpointing
+Just specify when and how often you would like to validate using a natural-language-like syntax:
+
+```python
+@run.val_step(val_loader, every='2 epochs', at='beginning')
+def val_step(batch, model):
+    ...
+```
+
+Of course, you can use multiple validation functions which different data loaders and validation preferences, Blowtorch will join the metrics conveniently.
+
+### Hooks
+TODO
+
+### Distributed data parallel
+DDP should work but is still experimental. Just add the `ddp` decorator to your ...
+
+### Run options
 `Run.run()` takes following options:
 * `model`: `torch.nn.Module`
 * `train_loader`: `torch.utils.data.DataLoader`
@@ -74,18 +114,3 @@ python train.py with model.num_layers=4 model.use_dropout=True
 * `smaller_is_better`: `bool` (default `True`)
 * `optimize_first`: `bool` (whether optimization should occur during the first epoch, default `False`)
 * `detect_anomalies`: `bool` (enable autograd anomaly detection, default `False`)
-
-## Logging
-Blowtorch will create a folder with name "[timestamp]-[name]-[sequential integer]" for each run inside the `run.save_path` directory. Here it will save the runs's configuration, metrics, a model summary, checkoints as well as source code. Additional loggers can be added through `Run`s `loggers` parameter:
-
-* `blowtorch.loggers.WandbLogger`: Logs to Weights & Biases
-* `blowtorch.loggers.TensorBoardLogger`: Logs to TensorBoard
-
-Custom loggers can be created by subclassing `blowtorch.loggers.BaseLogger`.
-
-## Decorators
-Blowtorch uses the decorator syntax to specify parts of the training pipeline:
-
-* `@run.train_step`, `@run.val_step`: Specify train/val steps with one or two functions. Arguments: `batch`, `model`, `is_validate`, `device`, `epoch`
-* `@run.train_epoch`, `@run.val_epoch`: Specify whole train/val epoch, in case more flexibility for iteration/optimization is required. Arguments: `data_loader`, `model`, `is_validate`, `optimizers`
-* `@run.configure_optimizers`: Return optimizers and learning rate schedulers. Can either return a single optimizer object or a dictionary with multiple optimizers/schedulers. Arguments: `model`

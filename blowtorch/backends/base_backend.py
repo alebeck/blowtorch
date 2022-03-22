@@ -15,8 +15,8 @@ class BaseBackend:
     def get_name(self):
         pass
 
-    def prepare_data_loaders(self, train_loader, val_loader):
-        return train_loader, val_loader
+    def prepare_data_loaders(self, *loaders):
+        return loaders
 
     @abstractmethod
     def get_train_step_context(self):

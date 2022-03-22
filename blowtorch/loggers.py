@@ -1,4 +1,3 @@
-import inspect
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import List
@@ -62,12 +61,6 @@ class StandardLogger(BaseLogger):
         with (self._save_path / 'model_summary.txt').open('w') as fh:
             fh.write(repr(model))
 
-        with (self._save_path / 'source.txt').open('a') as fh:
-            fh.write(inspect.getsource(type(model)))
-            for function in bound_functions.values():
-                fh.write('\n')
-                fh.write(inspect.getsource(function))
-
     def after_pass(self, metrics: dict, epoch: int, is_validate: bool = False):
         status_str = f'[Epoch {epoch} / {"Val" if is_validate else "Train"}] ' \
                      + ' '.join([f'{k}: {v}' for k, v in metrics.items()]) + '\n'
@@ -101,8 +94,8 @@ class WandbLogger(BaseLogger):
             self._wandb.config.update(config)
 
     def after_pass(self, metrics: dict, epoch: int, is_validate: bool = False):
-        prefix = 'val_' if is_validate else 'train_'
-        self._wandb.log({(prefix + k): v for k, v in metrics.items()}, step=epoch)
+        postfix = '/val' if is_validate else '/train'
+        self._wandb.log({(k + postfix): v for k, v in metrics.items()}, step=epoch)
 
     def after_epoch(self, epoch: int, model: nn.Module):
         pass
