@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import List
+import time
 
 from ruamel.yaml import YAML
 from torch import nn
@@ -80,14 +81,21 @@ class WandbLogger(BaseLogger):
         self._wandb_args = kwargs
         self._resume = None
 
-    def setup(self, save_path: Path, run_name: str, resume: bool):
+    def setup(self, save_path: Path, run_name: str, resume: bool, retries=5):
         if 'name' in self._wandb_args:
             del self._wandb_args['name']
         self._resume = resume
         # always set resume=True, since every run is saved in its own directory anyway and wandb will just create a new
         # run if no previous run exists in the save_path directory. This way wandb automatically saves the run id in
         # the save_path directory and automatically resumes later, if desired.
-        self._wandb.init(name=run_name, dir=save_path, resume=True, **self._wandb_args)
+        for k in range(retries):
+            try:
+                self._wandb.init(name=run_name, dir=save_path, resume=True, **self._wandb_args)
+                return
+            except:
+                time.sleep(30)
+
+        raise ConnectionError(f'Cannot connect to wandb after {retries} retries')
 
     def before_training_start(self, config: dict, model: nn.Module, bound_functions: BoundFunctions):
         if not self._resume:
