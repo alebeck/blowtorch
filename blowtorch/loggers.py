@@ -103,13 +103,9 @@ class WandbLogger(BaseLogger):
 
     def after_pass(self, metrics: dict, charts: dict, epoch: int, is_validate: bool = False):
         postfix = '/val' if is_validate else '/train'
-        
-        print('CHARTS'+postfix)
-        print(charts)
 
         if charts is not None:
-            postfix = 'ok_chart'
-            self._wandb.log({k: v for k, v in charts.items()}, commit=False)
+            self._wandb.log({(k + postfix): v for k, v in charts.items()}, commit=False)
 
         self._wandb.log({(k + postfix): v for k, v in metrics.items()}, step=epoch)
 
