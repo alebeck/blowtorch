@@ -258,7 +258,7 @@ class Run:
                         except TypeError:
                             pass
 
-                self._logger.after_pass(train_metrics, epoch, is_validate=False)
+                self._logger.after_pass(metrics=train_metrics, charts=None, epoch=epoch, is_validate=False)
 
                 t.success(f'[Epoch {epoch} / Train] ' +
                           ' '.join([f'{k}: {std_round(v)}' for k, v in train_metrics.items() if isinstance(v, float)]))
@@ -270,16 +270,17 @@ class Run:
                 model.eval()
                 torch.set_grad_enabled(False)
                 val_metrics_list = []
+                val_charts_dict = {}
 
                 with writer.task(f'Validating epoch {epoch}') as t:
                     for val_loader, val_func in zip(val_loaders, self._bound_functions['val_step']):
                         val_metrics = defaultdict(float)
-                        for batch in t.tqdm(val_loader):
+                        for batch_index, batch in enumerate(t.tqdm(val_loader)):
                             batch = self._backend.to_device(batch)
 
                             with self._backend.get_val_step_context():
-                                metrics = call(val_func, batch=batch, model=model, is_validate=True,
-                                           device=self._backend.device, epoch=epoch)
+                                metrics, charts = call(val_func, batch=batch, model=model, is_validate=True,
+                                           device=self._backend.device, epoch=epoch, batch_index=batch_index)
 
                             if not isinstance(metrics, dict):
                                 metrics = {'loss': metrics}
@@ -290,6 +291,12 @@ class Run:
                             display_metric = self._optimize_metric if self._optimize_metric in metrics else \
                                 list(metrics.keys())[0]
                             t.set_current_metrics({display_metric: std_round(metrics[display_metric].item())})
+                            
+                            if charts is not None and isinstance(charts, dict):
+                                for k, v in charts.items():
+                                    if v is None:
+                                        continue
+                                    val_charts_dict[k] = v
 
                         self._backend.synchronize_metrics(val_metrics)
 
@@ -318,8 +325,8 @@ class Run:
                         warnings.filterwarnings('default')
                     else:
                         self._backend.scheduler_step(val_metrics[self._optimize_metric])
-
-                    self._logger.after_pass(val_metrics, epoch, is_validate=True)
+                    
+                    self._logger.after_pass(metrics=val_metrics, charts=val_charts_dict, epoch=epoch, is_validate=True) 
 
                     t.success(f'[Epoch {epoch} / Val]   ' +
                           ' '.join([f'{k}: {std_round(v)}' for k, v in val_metrics.items() if isinstance(v, float)]))

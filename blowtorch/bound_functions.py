@@ -6,7 +6,7 @@ from . import _writer as writer
 AVAILABLE_PARAMS = {
     'configure_optimizers': ['model'],
     'train_step': ['batch', 'model', 'is_validate', 'device', 'epoch'],
-    'val_step': ['batch', 'model', 'is_validate', 'device', 'epoch'],
+    'val_step': ['batch', 'model', 'is_validate', 'device', 'epoch', 'batch_index'],
     'after_train': ['metrics', 'model', 'device', 'epoch'],
     'after_val': ['metrics', 'model', 'device', 'epoch'],
     # 'train_epoch': ['model', 'is_validate', 'device', 'epoch', 'optimizers'],

@@ -29,7 +29,7 @@ class BaseLogger(ABC):
         pass
 
     @abstractmethod
-    def after_pass(self, metrics: dict, epoch: int, is_validate: bool = False):
+    def after_pass(self, metrics: dict, charts: dict, epoch: int, is_validate: bool = False):
         pass
 
     @abstractmethod
@@ -62,7 +62,7 @@ class StandardLogger(BaseLogger):
         with (self._save_path / 'model_summary.txt').open('w') as fh:
             fh.write(repr(model))
 
-    def after_pass(self, metrics: dict, epoch: int, is_validate: bool = False):
+    def after_pass(self, metrics: dict, charts: dict, epoch: int, is_validate: bool = False):
         status_str = f'[Epoch {epoch} / {"Val" if is_validate else "Train"}] ' \
                      + ' '.join([f'{k}: {v}' for k, v in metrics.items()]) + '\n'
         with self._log_file.open('a') as fh:
@@ -101,8 +101,16 @@ class WandbLogger(BaseLogger):
         if not self._resume:
             self._wandb.config.update(config)
 
-    def after_pass(self, metrics: dict, epoch: int, is_validate: bool = False):
+    def after_pass(self, metrics: dict, charts: dict, epoch: int, is_validate: bool = False):
         postfix = '/val' if is_validate else '/train'
+        
+        print('CHARTS'+postfix)
+        print(charts)
+
+        if charts is not None:
+            postfix = 'ok_chart'
+            self._wandb.log({k: v for k, v in charts.items()}, commit=False)
+
         self._wandb.log({(k + postfix): v for k, v in metrics.items()}, step=epoch)
 
     def after_epoch(self, epoch: int, model: nn.Module):
@@ -138,7 +146,7 @@ class TensorBoardLogger(BaseLogger):
     def before_training_start(self, config: dict, model: nn.Module, bound_functions: BoundFunctions):
         pass
 
-    def after_pass(self, metrics: dict, epoch: int, is_validate: bool = False):
+    def after_pass(self, metrics: dict, charts: dict, epoch: int, is_validate: bool = False):
         postfix = '/val' if is_validate else '/train'
         for k, v in metrics.items():
             self.summary_writer.add_scalar(k + postfix, v, epoch)
@@ -161,9 +169,9 @@ class LoggerSet(BaseLogger):
         for logger in self._loggers:
             logger.before_training_start(config, model, bound_functions)
 
-    def after_pass(self, metrics: dict, epoch: int, is_validate: bool = False):
+    def after_pass(self, metrics: dict, charts: dict, epoch: int, is_validate: bool = False):
         for logger in self._loggers:
-            logger.after_pass(metrics, epoch, is_validate)
+            logger.after_pass(metrics, charts, epoch, is_validate)
 
     def after_epoch(self, epoch: int, model: nn.Module):
         for logger in self._loggers:
