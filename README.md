@@ -84,7 +84,7 @@ Custom loggers can be created by subclassing `blowtorch.loggers.BaseLogger`.
 Just specify when and how often you would like to validate using a natural-language-like syntax:
 
 ```python
-@run.val_step(val_loader, every='2 epochs', at='beginning')
+@run.val_step(val_loader, every=2, at=0)
 def val_step(batch, model):
     ...
 ```
