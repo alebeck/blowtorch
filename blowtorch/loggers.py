@@ -105,7 +105,7 @@ class WandbLogger(BaseLogger):
         postfix = '/val' if is_validate else '/train'
 
         if charts is not None:
-            self._wandb.log({(k + postfix): v for k, v in charts.items()}, commit=False)
+            self._wandb.log({k: v for k, v in charts.items()}, commit=False)
 
         self._wandb.log({(k + postfix): v for k, v in metrics.items()}, step=epoch)
 
